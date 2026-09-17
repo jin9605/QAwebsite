@@ -34,6 +34,7 @@
 .remove-file { align-self: flex-end; padding: 4px 0; background: transparent; color: #c13b49; font-size: 12px; }
 .stored-evidence { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; }
 .stored-evidence a { color: #1769e8; }
+.tr > :nth-child(4), .tr > :nth-child(5), .tr > :nth-child(6) { justify-self: center; text-align: center; }
 
 @media (min-width: 901px) {
   main { max-width: none !important; width: 100% !important; }
