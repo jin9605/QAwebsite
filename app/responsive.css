@@ -1,9 +1,44 @@
 .content-input { display: block; min-height: 330px; max-height: 560px; resize: vertical; overflow: auto; font-weight: 400; line-height: 1.6; }
+.evidence { margin-top: 28px; padding: 22px; border: 1px solid #cfdced; border-radius: 12px; background: #f9fbff; }
+.evidence-head { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.evidence-head b { font-size: 20px; }
+.evidence-head p { margin: 6px 0 0; color: #66758b; font-size: 14px; font-weight: 400; }
+.upload-button { display: inline-block; flex: 0 0 auto; padding: 11px 15px; border-radius: 8px; background: #1769e8; color: #fff; cursor: pointer; }
+.upload-button input { display: none; }
+.evidence-empty { margin-top: 18px; padding: 34px; border: 1px dashed #b7c8df; border-radius: 9px; text-align: center; color: #78869b; font-weight: 400; }
+.upload-error { margin: 14px 0 0; color: #bd2c2c; font-size: 14px; font-weight: 600; }
+.evidence-count { display: block; margin-top: 13px; text-align: right; color: #66758b; font-size: 13px; font-style: normal; }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.evidence-card { display: grid; grid-template-columns: 180px minmax(0, 1fr); overflow: hidden; border: 1px solid #d4dfed; border-radius: 9px; background: #fff; }
+.evidence-preview { position: relative; display: flex; height: 142px; align-items: center; justify-content: center; overflow: hidden; border: 0; border-radius: 0; padding: 0; background: #eaf0f8; color: #63738a; text-align: center; font-weight: 700; }
+.evidence-preview img, .evidence-preview video { width: 100%; height: 142px; object-fit: cover; }
+.evidence-preview:hover { filter: brightness(.96); cursor: pointer; }
+.play-badge { position: absolute; display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: rgba(17,35,67,.8); color: white; font-size: 18px; }
+.video-placeholder { color: #8da0b9; font-size: 18px; letter-spacing: .12em; }
+.inline-video { margin-top: 18px; overflow: hidden; border: 1px solid #cfdaea; border-radius: 9px; background: #101827; }
+.inline-video > div { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; color: #fff; }
+.inline-video > div button { padding: 4px 7px; background: transparent; color: #d9e4f5; font-size: 13px; }
+.inline-video video { display: block; width: 100%; max-height: 520px; background: #000; }
+.inline-video nav { display: flex; gap: 8px; padding: 10px; }
+.inline-video nav button { background: #24334c; color: #fff; font-size: 14px; }
+.media-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 40px; background: rgba(10,18,34,.78); }
+.media-modal-body { position: relative; display: grid; max-width: min(1100px, 92vw); max-height: 86vh; overflow: hidden; border-radius: 10px; background: #101827; }
+.media-modal-body img, .media-modal-body video { display: block; max-width: min(1100px, 92vw); max-height: 76vh; object-fit: contain; }
+.modal-close { position: fixed; top: 22px; right: 30px; background: transparent; color: #fff; font-size: 36px; font-weight: 400; }
+.video-controls { display: flex; gap: 8px; padding: 12px; background: #101827; }
+.video-controls button { background: #24334c; color: #fff; font-size: 14px; }
+.evidence-info { display: flex; min-width: 0; flex-direction: column; gap: 7px; padding: 12px; }
+.evidence-info b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.evidence-info small { color: #738197; }
+.evidence-info input { margin: 2px 0 0; padding: 8px; font-size: 13px; }
+.remove-file { align-self: flex-end; padding: 4px 0; background: transparent; color: #c13b49; font-size: 12px; }
+.stored-evidence { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; }
+.stored-evidence a { color: #1769e8; }
 
 @media (min-width: 901px) {
   main { max-width: none !important; width: 100% !important; }
   .table { display: block !important; width: 100% !important; }
-  .tr { grid-template-columns: 42px 60px minmax(260px, 1fr) 150px 220px; }
+  .tr { grid-template-columns: 42px 60px minmax(230px, 1fr) 120px 150px 220px; }
   .toolbar { min-height: 88px; }
   .toolbar label { white-space: nowrap; }
   .toolbar select { min-width: 150px; }

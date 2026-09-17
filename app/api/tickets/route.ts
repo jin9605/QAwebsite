@@ -9,12 +9,13 @@ async function init() {
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_attachments_ticket_id ON attachments(ticket_id)`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_comments_ticket_id ON comments(ticket_id, created_at)`),
   ]);
+  try { await env.DB.prepare(`ALTER TABLE tickets ADD COLUMN game TEXT`).run(); } catch (error) { if (!String(error).includes("duplicate column name")) throw error; }
 }
-export async function GET() { await init(); const { results } = await env.DB.prepare(`SELECT id,title,status,severity,created_at,updated_at FROM tickets ORDER BY updated_at DESC`).all(); return json({ tickets: results }); }
+export async function GET() { await init(); const { results } = await env.DB.prepare(`SELECT id,title,status,severity,game,created_at,updated_at FROM tickets ORDER BY updated_at DESC`).all(); return json({ tickets: results }); }
 export async function POST(request: Request) {
   await init(); const body = await request.json() as Record<string, string>; const title = (body.title || "").trim();
   if (!title || title.length > 50) return json({ error: "제목은 1~50자로 입력해 주세요." }, 400);
   const id = crypto.randomUUID(), now = new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO tickets (id,title,status,severity,environment,frequency,reproduction,content,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(id,title,body.status||"신규",body.severity||"Major",body.environment||"",body.frequency||"항상",body.reproduction||"",body.content||"",now,now).run();
+  await env.DB.prepare(`INSERT INTO tickets (id,title,status,severity,game,environment,frequency,reproduction,content,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(id,title,body.status||"신규",body.severity||"Major",(body.game||"").trim(),body.environment||"",body.frequency||"항상",body.reproduction||"",body.content||"",now,now).run();
   return json({ id }, 201);
 }

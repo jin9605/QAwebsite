@@ -1,7 +1,11 @@
 import { env } from "cloudflare:workers";
+const MAX_ATTACHMENT_SIZE = 300 * 1024 * 1024;
+const allowedTypes = /^(image\/|video\/|text\/|application\/(json|xml))/;
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: ticketId } = await params; const form = await request.formData(); const files = form.getAll("files").filter((x): x is File => x instanceof File); const descriptions = JSON.parse(String(form.get("descriptions") || "[]")) as string[];
   if (!files.length) return Response.json({ error: "파일이 없습니다." }, { status: 400 });
+  const invalid = files.find(file => file.size > MAX_ATTACHMENT_SIZE || (file.type && !allowedTypes.test(file.type)));
+  if (invalid) return Response.json({ error: `이미지·동영상·로그 파일만 첨부할 수 있으며, 파일당 최대 300MB입니다. (${invalid.name})` }, { status: 400 });
   const now = new Date().toISOString(), created = [] as unknown[];
   for (let i=0;i<files.length;i++) { const file=files[i], id=crypto.randomUUID(), key=`tickets/${ticketId}/${id}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
     await env.BUCKET.put(key,file.stream(),{httpMetadata:{contentType:file.type || "application/octet-stream",contentDisposition:`inline; filename="${file.name.replace(/"/g,"")}"`}});
