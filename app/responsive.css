@@ -1,5 +1,6 @@
 @media (min-width: 901px) {
-  main { max-width: none; width: 100%; }
+  main { max-width: none !important; width: 100% !important; }
+  .table { display: block !important; width: 100% !important; }
   .tr { grid-template-columns: 42px 60px minmax(260px, 1fr) 150px 220px; }
   .toolbar { min-height: 88px; }
   .toolbar label { white-space: nowrap; }
