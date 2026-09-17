@@ -1,3 +1,5 @@
+.content-input { display: block; min-height: 330px; max-height: 560px; resize: vertical; overflow: auto; font-weight: 400; line-height: 1.6; }
+
 @media (min-width: 901px) {
   main { max-width: none !important; width: 100% !important; }
   .table { display: block !important; width: 100% !important; }
