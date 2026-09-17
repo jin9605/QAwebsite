@@ -1,3 +1,11 @@
+@media (min-width: 901px) {
+  main { max-width: none; width: 100%; }
+  .tr { grid-template-columns: 42px 60px minmax(260px, 1fr) 150px 220px; }
+  .toolbar { min-height: 88px; }
+  .toolbar label { white-space: nowrap; }
+  .toolbar select { min-width: 150px; }
+}
+
 @media (max-width: 900px) {
   main { padding: 26px 20px 56px; }
   .toolbar { gap: 12px; flex-wrap: wrap; }
