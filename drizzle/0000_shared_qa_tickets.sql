@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS comments (
   id TEXT PRIMARY KEY,
   ticket_id TEXT NOT NULL,
   author TEXT NOT NULL,
+  created_by_id TEXT,
   body TEXT NOT NULL,
   created_at TEXT NOT NULL
 );

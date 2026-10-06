@@ -1,0 +1,2 @@
+-- created_by_id is created in 0000_shared_qa_tickets.sql.
+-- Keep this migration as a no-op because existing deployments may already record it in their journal.
