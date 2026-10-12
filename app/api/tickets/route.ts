@@ -25,7 +25,7 @@ export async function GET(request: Request) {
   const keyword = (url.searchParams.get("q") || "").trim().slice(0, 100);
   const sort = url.searchParams.get("sort") || "updated";
   const include = new Set(url.searchParams.getAll("include").flatMap(value => value.split(",")).map(value => value.trim()));
-  const orderBy = sort === "created" ? "tickets.created_at DESC" : sort === "oldest" ? "tickets.created_at ASC" : sort === "severity" ? "CASE tickets.severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 ELSE 5 END, tickets.updated_at DESC" : sort === "due" ? "CASE WHEN tickets.due_at IS NULL OR tickets.due_at='' THEN 1 ELSE 0 END, tickets.due_at ASC" : "tickets.updated_at DESC";
+  const orderBy = sort === "created" ? "CASE WHEN julianday(tickets.created_at)>julianday('now') THEN 1 ELSE 0 END, tickets.created_at DESC" : sort === "oldest" ? "tickets.created_at ASC" : sort === "severity" ? "CASE tickets.severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 ELSE 5 END, tickets.updated_at DESC" : sort === "due" ? "CASE WHEN tickets.due_at IS NULL OR tickets.due_at='' THEN 1 ELSE 0 END, tickets.due_at ASC" : "CASE WHEN julianday(tickets.updated_at)>julianday('now') THEN 1 ELSE 0 END, tickets.updated_at DESC";
   const where = ["tickets.deleted_at IS NULL", "(?='admin' OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=tickets.project_id AND pm.user_id=?))"];
   const values: Array<string | number> = [user.role, user.id];
   const addMultiFilter = (column: string, selected: string[]) => { if (selected.length) { where.push(`${column} IN (${selected.map(() => "?").join(",")})`); values.push(...selected); } };

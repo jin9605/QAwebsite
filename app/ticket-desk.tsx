@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { Extension } from "@tiptap/core";
 import Color from "@tiptap/extension-color";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -16,12 +17,13 @@ type ProjectMember = { id: string; name: string; email: string; role: string };
 type Attachment = { id: string; name: string; content_type: string; size: number; description: string };
 type Comment = { id: string; author: string; created_by_id?: string | null; body: string; created_at: string };
 type History = { actor_name: string; action: string; before_json?: string | null; after_json?: string | null; created_at: string };
-type Detail = { ticket: Ticket & { environment: string; frequency: string; reproduction: string; content: string; created_by_name?: string; updated_by_name?: string }; attachments: Attachment[]; comments: Comment[]; history: History[] };
+type Detail = { ticket: Ticket & { environment: string; frequency: string; reproduction: string; content: string; created_by_name?: string; updated_by_name?: string }; attachments: Attachment[]; comments: Comment[]; history: History[]; can_edit_details: boolean };
 type AdminHistoryItem = { actor_name: string; action: string; title: string | null; created_at: string };
 type AdminData = { users: Array<{ id: string; name: string; email: string; role: string; status: string; created_at: string; last_login_at: string | null }>; logins: Array<{ name: string | null; email: string; success: number; created_at: string }>; history: AdminHistoryItem[]; createdTickets: AdminHistoryItem[]; deletedTickets: AdminHistoryItem[] };
 type TrashTicket = { id: string; title: string; deleted_at: string; deleted_by_name: string | null };
 type DashboardSummary = { total: number; status_new: number; status_in_progress: number; status_done: number; status_not_issue: number; severity_critical: number; severity_high: number; severity_medium: number; severity_low: number; mine: number; open: number; due_soon: number };
 type TicketFilterOptions = { projects: Array<{ id: string; name: string }>; assignees: Array<{ id: string; name: string }>; creators: Array<{ id: string; name: string }> };
+type TicketTemplate = { id: string; name: string; content: string; is_default: number; created_at: string; updated_at: string };
 
 const statuses = ["신규", "진행", "완료", "이슈 아님"];
 const severities = ["Critical", "High", "Medium", "Low"];
@@ -82,12 +84,12 @@ function MarkdownContent({ value }: { value: string }) {
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
     const key = `line-${index}`;
-    if (!line) { blocks.push(<br key={key}/>); index += 1; continue; }
-    if (line.startsWith("- ") || /^\d+\.\s/.test(line)) {
-      const ordered = /^\d+\.\s/.test(line);
+    if (!line) { index += 1; continue; }
+    if (/^-\s*(?:.*)$/.test(line) || /^\d+\.\s*(?:.*)$/.test(line)) {
+      const ordered = /^\d+\.\s*(?:.*)$/.test(line);
       const items: JSX.Element[] = [];
       while (index < lines.length) {
-        const item = ordered ? lines[index].match(/^\d+\.\s(.+)$/) : lines[index].match(/^-\s(.+)$/);
+        const item = ordered ? lines[index].match(/^\d+\.\s*(.*)$/) : lines[index].match(/^-\s*(.*)$/);
         if (!item) break;
         items.push(<li key={`item-${index}`}>{inline(item[1], `item-${index}`)}</li>); index += 1;
       }
@@ -122,13 +124,13 @@ const markdownToEditorHtml = (value: string) => {
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
     if (!line.trim()) { index += 1; continue; }
-    const unordered = line.match(/^-\s+(.+)$/);
-    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    const unordered = line.match(/^-\s*(.*)$/);
+    const ordered = line.match(/^\d+\.\s*(.*)$/);
     if (unordered || ordered) {
       const tag = unordered ? "ul" : "ol";
       const items: string[] = [];
       while (index < lines.length) {
-        const item = tag === "ul" ? lines[index].match(/^-\s+(.+)$/) : lines[index].match(/^\d+\.\s+(.+)$/);
+        const item = tag === "ul" ? lines[index].match(/^-\s*(.*)$/) : lines[index].match(/^\d+\.\s*(.*)$/);
         if (!item) break;
         items.push(`<li>${markdownInlineToHtml(item[1])}</li>`); index += 1;
       }
@@ -163,7 +165,7 @@ const editorHtmlToMarkdown = (html: string) => {
       case "H3": return `### ${children().trim()}\n\n`;
       case "BLOCKQUOTE": return `> ${children().trim().replace(/\n/g, "\n> ")}\n\n`;
       case "UL": return `${Array.from(element.children).filter(item => item.tagName === "LI").map(item => `- ${content(item).trim()}`).join("\n")}\n\n`;
-      case "OL": return `${Array.from(element.children).filter(item => item.tagName === "LI").map((item, index) => `${index + 1}. ${content(item).trim()}`).join("\n")}\n\n`;
+      case "OL": return `${Array.from(element.children).filter(item => item.tagName === "LI").map((item, index) => `${index + 1}. ${content(item).replace(/\u200B/g, "").trim()}`).join("\n")}\n\n`;
       case "LI": return children();
       case "DIV": case "P": return `${children().trim()}\n\n`;
       default: return children();
@@ -181,11 +183,22 @@ function RichTextEditor({ value, onChange, disabled }: { value: string; onChange
   const [linkText, setLinkText] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const palette = ["#17243c", "#52617b", "#1769e8", "#0f9d9a", "#16835a", "#b06b00", "#d94343", "#8e52c7"];
+  const continueEmptyOrderedList = useMemo(() => Extension.create({
+    name: "continueEmptyOrderedList",
+    priority: 1000,
+    addKeyboardShortcuts() {
+      return { Enter: () => {
+        const { state } = this.editor;
+        if (!this.editor.isActive("orderedList") || !this.editor.isActive("listItem") || !state.selection.empty || state.selection.$from.parent.textContent.replace(/\u200B/g, "").trim()) return false;
+        return this.editor.chain().insertContent("\u200B").splitListItem("listItem").run();
+      } };
+    },
+  }), []);
   const editor = useEditor({
     immediatelyRender: false,
-    extensions: [StarterKit.configure({ heading: { levels: [1, 2, 3] } }), TextStyle, Color, Link.configure({ openOnClick: false, autolink: true, defaultProtocol: "https" }), Placeholder.configure({ placeholder: "티켓의 재현 방법, 기대 결과, 실제 결과를 자유롭게 작성하세요." })],
+    extensions: [continueEmptyOrderedList, StarterKit.configure({ heading: { levels: [1, 2, 3] } }), TextStyle, Color, Link.configure({ openOnClick: false, autolink: true, defaultProtocol: "https" }), Placeholder.configure({ placeholder: "티켓의 재현 방법, 기대 결과, 실제 결과를 자유롭게 작성하세요." })],
     content: markdownToEditorHtml(value),
-    editorProps: { attributes: { class: "visual-editor-surface", "data-placeholder": "티켓의 재현 방법, 기대 결과, 실제 결과를 자유롭게 작성하세요." } },
+    editorProps: { attributes: { class: "visual-editor-surface", "aria-label": "내용 입력", "data-placeholder": "티켓의 재현 방법, 기대 결과, 실제 결과를 자유롭게 작성하세요." } },
     onUpdate: ({ editor: currentEditor }) => {
       const next = editorHtmlToMarkdown(currentEditor.getHTML()).slice(0, 10000);
       lastValue.current = next;
@@ -236,10 +249,62 @@ function RichTextEditor({ value, onChange, disabled }: { value: string; onChange
   const tool = (label: string, action: () => void, active = false, className = "") => <button className={`${className}${active ? " is-active" : ""}`} type="button" onMouseDown={event => event.preventDefault()} onClick={action} disabled={disabled || !editor} aria-label={label} title={label}>{label === "굵게" ? <b>B</b> : label === "기울임" ? <i>I</i> : label}</button>;
   const captureLinkSelection = (event: React.MouseEvent<HTMLButtonElement>) => { event.preventDefault(); if (editor) linkSelection.current = { from: editor.state.selection.from, to: editor.state.selection.to }; };
   const validLink = Boolean(normalizeLinkUrl(linkUrl));
-  return <div className="rich-editor"><div className="visual-editor-toolbar" role="toolbar" aria-label="내용 서식"><div className="visual-editor-group">{tool("굵게", () => editor?.chain().focus().toggleBold().run(), editor?.isActive("bold"))}{tool("기울임", () => editor?.chain().focus().toggleItalic().run(), editor?.isActive("italic"))}</div><div className="visual-editor-group">{tool("목록", () => editor?.chain().focus().toggleBulletList().run(), editor?.isActive("bulletList"))}{tool("번호 목록", () => editor?.chain().focus().toggleOrderedList().run(), editor?.isActive("orderedList"))}{tool("인용", () => editor?.chain().focus().toggleBlockquote().run(), editor?.isActive("blockquote"))}</div><div className="visual-editor-group">{tool("코드", () => editor?.chain().focus().toggleCodeBlock().run(), editor?.isActive("codeBlock"))}</div><div className="visual-color-control"><button className="visual-color-button" type="button" onMouseDown={event => event.preventDefault()} onClick={() => setPaletteOpen(open => !open)} disabled={disabled || !editor} aria-label="글자 색상" aria-expanded={paletteOpen} title="글자 색상"><b style={{ borderBottomColor: textColor }}>A</b></button>{paletteOpen && <div className="visual-color-palette" role="dialog" aria-label="글자 색상 선택">{palette.map(color => <button key={color} type="button" className={textColor === color ? "is-selected" : ""} style={{ backgroundColor: color }} onMouseDown={event => event.preventDefault()} onClick={() => applyColor(color)} aria-label={`${color} 색상`} title={color}/>) }<input type="color" value={textColor} aria-label="사용자 지정 글자 색상" onChange={event => applyColor(event.target.value)} /></div>}</div><div className="visual-link-control"><button type="button" onMouseDown={captureLinkSelection} onClick={openLink} disabled={disabled || !editor} aria-label="링크 추가" title="텍스트 링크 추가">링크</button>{linkOpen && <div className="visual-link-popover" role="dialog" aria-label="링크 추가"><label>표시할 텍스트<input value={linkText} onChange={event => setLinkText(event.target.value)} placeholder="선택한 텍스트"/></label><label>링크 주소<input value={linkUrl} onChange={event => setLinkUrl(event.target.value)} placeholder="example.com 또는 https://example.com" autoFocus/></label><div><button type="button" onClick={() => setLinkOpen(false)}>취소</button><button className="apply-link" type="button" onClick={applyLink} disabled={!linkText.trim() || !validLink}>적용</button></div></div>}</div></div><EditorContent editor={editor} /></div>;
+  return <div className="rich-editor"><div className="visual-editor-toolbar" role="toolbar" aria-label="내용 서식"><select className="visual-heading-select" aria-label="글자 크기 및 문단 형식" disabled={disabled || !editor} value={editor?.isActive("heading", { level: 1 }) ? "1" : editor?.isActive("heading", { level: 2 }) ? "2" : editor?.isActive("heading", { level: 3 }) ? "3" : "body"} onChange={event => { const level = Number(event.target.value); if (level === 1 || level === 2 || level === 3) editor?.chain().focus().setHeading({ level }).run(); else editor?.chain().focus().setParagraph().run(); }}><option value="body">본문</option><option value="1">큰 제목</option><option value="2">제목</option><option value="3">소제목</option></select><div className="visual-editor-group">{tool("굵게", () => editor?.chain().focus().toggleBold().run(), editor?.isActive("bold"))}{tool("기울임", () => editor?.chain().focus().toggleItalic().run(), editor?.isActive("italic"))}</div><div className="visual-editor-group">{tool("목록", () => editor?.chain().focus().toggleBulletList().run(), editor?.isActive("bulletList"))}{tool("번호 목록", () => editor?.chain().focus().toggleOrderedList().run(), editor?.isActive("orderedList"))}{tool("인용", () => editor?.chain().focus().toggleBlockquote().run(), editor?.isActive("blockquote"))}</div><div className="visual-editor-group">{tool("코드", () => editor?.chain().focus().toggleCodeBlock().run(), editor?.isActive("codeBlock"))}</div><div className="visual-color-control"><button className="visual-color-button" type="button" onMouseDown={event => event.preventDefault()} onClick={() => setPaletteOpen(open => !open)} disabled={disabled || !editor} aria-label="글자 색상" aria-expanded={paletteOpen} title="글자 색상"><b style={{ borderBottomColor: textColor }}>A</b></button>{paletteOpen && <div className="visual-color-palette" role="dialog" aria-label="글자 색상 선택">{palette.map(color => <button key={color} type="button" className={textColor === color ? "is-selected" : ""} style={{ backgroundColor: color }} onMouseDown={event => event.preventDefault()} onClick={() => applyColor(color)} aria-label={`${color} 색상`} title={color}/>) }<input type="color" value={textColor} aria-label="사용자 지정 글자 색상" onChange={event => applyColor(event.target.value)} /></div>}</div><div className="visual-link-control"><button type="button" onMouseDown={captureLinkSelection} onClick={openLink} disabled={disabled || !editor} aria-label="링크 추가" title="텍스트 링크 추가">링크</button>{linkOpen && <div className="visual-link-popover" role="dialog" aria-label="링크 추가"><label>표시할 텍스트<input value={linkText} onChange={event => setLinkText(event.target.value)} placeholder="선택한 텍스트"/></label><label>링크 주소<input value={linkUrl} onChange={event => setLinkUrl(event.target.value)} placeholder="example.com 또는 https://example.com" autoFocus/></label><div><button type="button" onClick={() => setLinkOpen(false)}>취소</button><button className="apply-link" type="button" onClick={applyLink} disabled={!linkText.trim() || !validLink}>적용</button></div></div>}</div></div><EditorContent editor={editor} /></div>;
 }
 
-function TicketEditor({ user, detail, projects, onSaved, onRefresh, onHome }: { user: SessionUser; detail: Detail | null; projects: Project[]; onSaved: (ticketId?: string) => void; onRefresh: () => void; onHome: () => void }) {
+type QuickDetailField = "status" | "project_id" | "assignee_id" | "severity" | "due_at" | "environment" | "frequency" | "reproduction";
+
+function TicketDetailSidebar({ detail, projects, onRefresh }: { detail: Detail; projects: Project[]; onRefresh: () => void }) {
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [editingText, setEditingText] = useState<"environment" | "reproduction" | null>(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    if (!detail.ticket.project_id || !detail.can_edit_details) return;
+    const controller = new AbortController();
+    fetch(`/api/projects/${detail.ticket.project_id}/members`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() as Promise<{ members: ProjectMember[] }> : Promise.reject(new Error("담당자 목록을 불러오지 못했습니다.")))
+      .then(data => setMembers(data.members))
+      .catch(() => { if (!controller.signal.aborted) setNotice("담당자 목록을 불러오지 못했습니다."); });
+    return () => controller.abort();
+  }, [detail.ticket.project_id, detail.can_edit_details]);
+  const updateField = async (field: QuickDetailField, value: string) => {
+    if (busy) return;
+    let issueReason: string | undefined;
+    if (field === "status" && value === "이슈 아님") {
+      const entered = window.prompt("이슈 아님 처리 사유를 입력해 주세요.", detail.ticket.issue_reason || "");
+      if (!entered?.trim()) return;
+      issueReason = entered.trim();
+    }
+    setBusy(true); setNotice("");
+    try {
+      const response = await fetch(`/api/tickets/${detail.ticket.id}?action=details`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ field, value, issue_reason: issueReason }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) { setNotice(result.error || "세부 정보를 저장하지 못했습니다."); return; }
+      setEditingText(null);
+      onRefresh();
+    } catch { setNotice("세부 정보를 저장하지 못했습니다. 다시 시도해 주세요."); }
+    finally { setBusy(false); }
+  };
+  const editable = detail.can_edit_details;
+  const ticket = detail.ticket;
+  const select = (label: string, field: QuickDetailField, value: string, options: Array<{ value: string; label: string }>) => <div><dt>{label}</dt><dd>{editable ? <select className="ticket-detail-inline-control" aria-label={`${label} 수정`} value={value} disabled={busy} onChange={event => { void updateField(field, event.target.value); }}>{options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select> : options.find(option => option.value === value)?.label || value || "미지정"}</dd></div>;
+  const textField = (label: string, field: "environment" | "reproduction", value: string) => <div><dt>{label}</dt><dd>{!editable ? value || "-" : editingText === field ? <span className="ticket-detail-text-edit"><input aria-label={`${label} 입력`} autoFocus value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void updateField(field, draft); } if (event.key === "Escape") setEditingText(null); }}/><button type="button" disabled={busy} onClick={() => { void updateField(field, draft); }}>저장</button><button type="button" disabled={busy} onClick={() => setEditingText(null)}>취소</button></span> : <button className="ticket-detail-edit-trigger" type="button" onClick={() => { setDraft(value || ""); setEditingText(field); }} aria-label={`${label} 수정`}>{value || "-"}</button>}</dd></div>;
+  return <aside className="ticket-detail-sidebar" aria-label="티켓 세부 정보"><h2>세부 정보</h2>{notice && <p className="ticket-detail-field-notice" role="alert">{notice}</p>}<dl className="ticket-information">
+    {select("진행상황", "status", ticket.status, statuses.map(value => ({ value, label: value })))}
+    {select("프로젝트", "project_id", ticket.project_id || "", projects.map(project => ({ value: project.id, label: project.name })))}
+    {select("담당자", "assignee_id", ticket.assignee_id || "", [{ value: "", label: "미지정" }, ...members.map(member => ({ value: member.id, label: member.name }))])}
+    <div className="ticket-detail-author"><dt>작성자</dt><dd>{ticket.created_by_name || "-"}</dd></div>
+    {select("위험도·심각도", "severity", ticket.severity, severities.map(value => ({ value, label: value })))}
+    <div><dt>마감일</dt><dd>{editable ? <input className="ticket-detail-inline-control" type="date" aria-label="마감일 수정" value={ticket.due_at || ""} disabled={busy} onChange={event => { void updateField("due_at", event.target.value); }}/> : ticket.due_at || "미설정"}</dd></div>
+    {textField("발생 환경", "environment", ticket.environment)}
+    {select("발생 빈도", "frequency", ticket.frequency || "항상", frequencies.map(value => ({ value, label: value })))}
+    {textField("재현 횟수", "reproduction", ticket.reproduction)}
+  </dl>{ticket.status === "이슈 아님" && ticket.issue_reason && <section className="ticket-issue-reason"><h2>이슈 아님 사유</h2><p>{ticket.issue_reason}</p></section>}</aside>;
+}
+
+function TicketEditor({ user, detail, projects, onSaved, onRefresh, onHome, onBack, inDialog = false }: { user: SessionUser; detail: Detail | null; projects: Project[]; onSaved: (ticketId?: string) => void; onRefresh: () => void; onHome: () => void; onBack: () => void; inDialog?: boolean }) {
   const [form, setForm] = useState(detail?.ticket || empty);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [files, setFiles] = useState<File[]>([]);
@@ -248,6 +313,16 @@ function TicketEditor({ user, detail, projects, onSaved, onRefresh, onHome }: { 
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(!detail);
   const editable = user.role !== "viewer";
+  const canEditFull = Boolean(detail && detail.can_edit_details && detail.ticket.created_by_id === user.id);
+  useEffect(() => {
+    if (detail) return;
+    const controller = new AbortController();
+    fetch("/api/auth/ticket-templates", { signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error("템플릿을 불러오지 못했습니다.");
+      return response.json() as Promise<{ templates: TicketTemplate[] }>;
+    }).then(data => { const defaultTemplate = data.templates.find(template => template.is_default === 1); if (defaultTemplate) setForm(current => current.content.trim() ? current : { ...current, content: defaultTemplate.content }); }).catch(() => { if (!controller.signal.aborted) setNotice("기본 템플릿을 불러오지 못했습니다."); });
+    return () => controller.abort();
+  }, [detail]);
   useEffect(() => {
     if (!form.project_id) return;
     fetch(`/api/projects/${form.project_id}/members`).then(response => response.ok ? response.json() : { members: [] }).then(data => setProjectMembers(data.members || []));
@@ -341,14 +416,46 @@ function TicketEditor({ user, detail, projects, onSaved, onRefresh, onHome }: { 
         </div>
         <div className="ticket-editor-divider"/>
         <label className="ticket-title-field">제목 <i>*</i><input maxLength={100} value={form.title} onChange={event => update("title", event.target.value)} required/></label>
-        <label className="wide ticket-content-field">내용 <i>*</i><RichTextEditor value={form.content || ""} onChange={value => update("content", value)} disabled={!editable}/></label>
+        <div className="wide ticket-content-field"><span className="ticket-content-label">내용 <i>*</i></span><RichTextEditor value={form.content || ""} onChange={value => update("content", value)} disabled={!editable}/></div>
         <section className="evidence evidence-before-save"><div className="evidence-head"><div><h2>증빙 자료</h2><p>최대 10개 · 파일당 300MB · 동영상은 2분 이하</p></div><label className="upload-button">파일 추가<input type="file" multiple accept="image/*,video/*,.log,.txt,.json,.har" onChange={event => { void addFiles(Array.from(event.target.files || [])); }}/></label></div>{files.map((file, index) => <div className="pending-file" key={`${file.name}-${index}`}><span>{file.name} · {fileSize(file.size)}</span><input value={descriptions[index] || ""} onChange={event => setDescriptions(values => values.map((value, itemIndex) => itemIndex === index ? event.target.value : value))} placeholder="파일 설명"/><button type="button" onClick={() => { setFiles(values => values.filter((_, itemIndex) => itemIndex !== index)); setDescriptions(values => values.filter((_, itemIndex) => itemIndex !== index)); }}>제거</button></div>)}</section>
       </fieldset>
       <div className="actions"><button className="primary" type="submit" disabled={busy}>{busy ? "저장 중…" : "티켓 저장"}</button>{notice && <span>{notice}</span>}</div>
     </form>
   </main>;
-  if (detail && !editing) return <main><header><div><button className="home-title" type="button" onClick={onHome}>QA Ticket Desk</button><span>티켓 상세 · {ticketCode(detail.ticket) ? `${ticketCode(detail.ticket)} · ` : ""}작성자: {detail.ticket.created_by_name || "-"} · {formatDate(detail.ticket.created_at)}</span></div>{editable && <button className="back" type="button" onClick={event => { event.preventDefault(); window.history.pushState(null, "", `#ticket/${detail.ticket.id}/edit`); setEditing(true); }}>수정</button>}{editable && (user.role === "admin" || detail.ticket.created_by_id === user.id) && <button className="danger" type="button" disabled={busy} onClick={() => { void removeTicket(); }}>삭제</button>}</header>{notice && <p className="editor-notice">{notice}</p>}<article className="ticket-view"><h1>{detail.ticket.title}</h1><dl className="ticket-information"><div><dt>진행상황</dt><dd><span className={`pill ${detail.ticket.status}`}>{detail.ticket.status}</span></dd></div>{ticketCode(detail.ticket) && <div><dt>티켓 번호</dt><dd>{ticketCode(detail.ticket)}</dd></div>}<div><dt>위험도·심각도</dt><dd>{detail.ticket.severity}</dd></div><div><dt>프로젝트</dt><dd>{detail.ticket.game || "미지정"}</dd></div><div><dt>작성자</dt><dd>{detail.ticket.created_by_name || "-"}</dd></div><div><dt>담당자</dt><dd>{detail.ticket.assignee || "미지정"}</dd></div><div><dt>마감일</dt><dd>{detail.ticket.due_at || "미설정"}</dd></div><div><dt>발생 환경</dt><dd>{detail.ticket.environment || "-"}</dd></div><div><dt>발생 빈도</dt><dd>{detail.ticket.frequency || "-"}</dd></div><div><dt>재현 횟수</dt><dd>{detail.ticket.reproduction || "-"}</dd></div></dl>{detail.ticket.status === "이슈 아님" && detail.ticket.issue_reason && <section className="ticket-issue-reason"><h2>이슈 아님 사유</h2><p>{detail.ticket.issue_reason}</p></section>}<section><h2>내용</h2><MarkdownContent value={detail.ticket.content}/></section></article>{detail.attachments.length ? <StoredEvidence attachments={detail.attachments}/> : null}{user.role !== "viewer" && <Comments detail={detail} user={user} onRefresh={onRefresh}/>}<HistoryPanel history={detail.history}/></main>;
+  if (detail && (!editing || !canEditFull)) return <main className="ticket-detail-page">
+    <header><div>{!inDialog && <button className="home-title" type="button" onClick={onHome}>QA Ticket Desk</button>}<span>티켓 상세</span></div>{!inDialog && <button className="back" type="button" onClick={onBack}>← 뒤로가기</button>}{canEditFull && <button className="back" type="button" onClick={event => { event.preventDefault(); setForm(detail.ticket); window.history.pushState(null, "", `#ticket/${detail.ticket.id}/edit`); setEditing(true); }}>수정</button>}{editable && (user.role === "admin" || detail.ticket.created_by_id === user.id) && <button className="danger" type="button" disabled={busy} onClick={() => { void removeTicket(); }}>삭제</button>}</header>
+    {notice && <p className="editor-notice">{notice}</p>}
+    <article className="ticket-view">
+      <div className="ticket-detail-heading"><span className="ticket-detail-eyebrow">티켓 제목</span>{ticketCode(detail.ticket) && <span className="ticket-detail-code">{ticketCode(detail.ticket)}</span>}<h1>{detail.ticket.title}</h1><p>작성자 {detail.ticket.created_by_name || "-"} · 생성 {formatDate(detail.ticket.created_at)}</p></div>
+      <div className="ticket-detail-grid">
+        <div className="ticket-detail-main">
+          <section className="ticket-description ticket-detail-card"><h2>설명</h2><div className="ticket-detail-card-body"><MarkdownContent value={detail.ticket.content}/></div></section>
+        </div>
+        <TicketDetailSidebar detail={detail} projects={projects} onRefresh={onRefresh}/>
+        <div className="ticket-detail-followup">
+          {detail.attachments.length ? <StoredEvidence attachments={detail.attachments}/> : null}
+          <section className="ticket-detail-activity ticket-detail-card"><h2>활동</h2><div className="ticket-detail-card-body">{user.role !== "viewer" && <Comments detail={detail} user={user} onRefresh={onRefresh}/>}<HistoryPanel history={detail.history}/></div></section>
+        </div>
+      </div>
+    </article>
+  </main>;
   return <main><header><div><button className="home-title" type="button" onClick={onHome}>QA Ticket Desk</button><span>{detail?.ticket.created_by_name ? `작성자: ${detail.ticket.created_by_name}` : `작성자: ${user.name}`} · 모든 저장은 이력에 기록됩니다.</span></div>{editable && <button className="primary" form="ticket-form" disabled={busy}>{busy ? "저장 중…" : "저장하기"}</button>}</header>{!detail && <h1 className="editor-title">티켓생성</h1>}<form id="ticket-form" className="editor" onSubmit={save}><fieldset disabled={!editable}><div className="fields"><label>제목 <i>*</i><input maxLength={100} value={form.title} onChange={event => update("title", event.target.value)} required/></label><label>진행상황 <i>*</i><select value={form.status} onChange={event => update("status", event.target.value)}>{statuses.map(value => <option key={value}>{value}</option>)}</select></label><label>위험도·심각도 <i>*</i><select value={form.severity} onChange={event => update("severity", event.target.value)}>{severities.map(value => <option key={value}>{value}</option>)}</select></label><label>담당자<input value={form.assignee || ""} onChange={event => update("assignee", event.target.value)} placeholder="예: 홍길동" maxLength={50}/></label><label>프로젝트<input value={form.game || ""} onChange={event => update("game", event.target.value)} placeholder="예: 메탈슬러그" maxLength={100}/></label><label>마감일<input type="date" value={form.due_at || ""} onChange={event => update("due_at", event.target.value)}/></label><label>발생 환경<input value={form.environment || ""} onChange={event => update("environment", event.target.value)}/></label><label>발생 빈도<select value={form.frequency || "항상"} onChange={event => update("frequency", event.target.value)}>{frequencies.map(value => <option key={value}>{value}</option>)}</select></label><label>재현 횟수<input value={form.reproduction || ""} onChange={event => update("reproduction", event.target.value)} placeholder="예: 5회 중 5회"/></label></div><label className="wide">내용 <i>*</i><textarea className="content-input" maxLength={10000} value={form.content || ""} onChange={event => update("content", event.target.value)} required/></label><section className="evidence"><div className="evidence-head"><div><h2>증빙 자료</h2><p>최대 10개 · 파일당 300MB · 동영상은 2분 이하</p></div>{editable && <label className="upload-button">파일 추가<input type="file" multiple accept="image/*,video/*,.log,.txt,.json,.har" onChange={event => { void addFiles(Array.from(event.target.files || [])); }}/></label>}</div>{files.map((file, index) => <div className="pending-file" key={`${file.name}-${index}`}><span>{file.name} · {fileSize(file.size)}</span><input value={descriptions[index] || ""} onChange={event => setDescriptions(values => values.map((value, itemIndex) => itemIndex === index ? event.target.value : value))} placeholder="파일 설명"/><button type="button" onClick={() => { setFiles(values => values.filter((_, itemIndex) => itemIndex !== index)); setDescriptions(values => values.filter((_, itemIndex) => itemIndex !== index)); }}>제거</button></div>)}</section></fieldset>{detail?.attachments.length ? <StoredEvidence attachments={detail.attachments} onDelete={editable ? removeAttachment : undefined}/> : null}{editable && <div className="actions"><button className="primary" type="submit" disabled={busy}>{busy ? "저장 중…" : "티켓 저장"}</button>{notice && <span>{notice}</span>}</div>}</form></main>;
+}
+
+function TicketDetailDialog({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeRef.current?.focus();
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return <div className="ticket-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="ticket-modal" role="dialog" aria-modal="true" aria-label="티켓 상세"><button ref={closeRef} className="ticket-modal-close" type="button" onClick={onClose} aria-label="티켓 상세 닫기">×</button>{children}</div></div>;
 }
 
 function Comments({ detail, user, onRefresh }: { detail: Detail; user: SessionUser; onRefresh: () => void }) {
@@ -406,23 +513,55 @@ type ReportListFilter = { projectId: string; status?: string; severity?: string;
 
 const reportStatuses = [{ label: "신규", color: "#4f8de8" }, { label: "진행", color: "#f0ac37" }, { label: "완료", color: "#45b77a" }, { label: "이슈 아님", color: "#97a3b6" }];
 
-function ActivityChart({ activity, canViewDeletions }: { activity: ProjectReport["activity"]; canViewDeletions: boolean }) {
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  const maximum = Math.max(1, ...activity.flatMap(item => canViewDeletions ? [item.created, item.updated, item.deleted] : [item.created, item.updated]));
+function ActivityChart({ activity, canViewDeletions, onOpenTicket }: { activity: ProjectReport["activity"]; canViewDeletions: boolean; onOpenTicket: (id: string) => void }) {
+  type ActivityType = "created" | "updated" | "deleted";
+  const [selectedType, setSelectedType] = useState<ActivityType>("created");
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (pinnedIndex === null) return;
+    const clearOnBlankClick = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && chartRef.current?.contains(target) && target.closest(".activity-hit-area, .activity-heatmap button, .activity-view-tabs button, .activity-day-detail")) return;
+      setPinnedIndex(null);
+      setHoveredIndex(null);
+    };
+    document.addEventListener("pointerdown", clearOnBlankClick);
+    return () => document.removeEventListener("pointerdown", clearOnBlankClick);
+  }, [pinnedIndex]);
+  const visibleTypes: Array<{ key: ActivityType; label: string; tickets: "created_tickets" | "updated_tickets" | "deleted_tickets"; color: string }> = [
+    { key: "created", label: "생성", tickets: "created_tickets", color: "#1769e8" },
+    { key: "updated", label: "수정", tickets: "updated_tickets", color: "#38ae78" },
+    ...(canViewDeletions ? [{ key: "deleted" as const, label: "삭제", tickets: "deleted_tickets" as const, color: "#df5858" }] : []),
+  ];
+  const selected = visibleTypes.find(type => type.key === selectedType) || visibleTypes[0];
+  const total = activity.reduce((sum, item) => sum + item[selected.key], 0);
+  const maximum = Math.max(1, ...activity.map(item => item[selected.key]));
   const axisMaximum = maximum <= 10 ? maximum : Math.ceil(maximum / 10) * 10;
   const axisStep = maximum <= 10 ? 1 : 10;
   const axisValues = Array.from({ length: axisMaximum / axisStep + 1 }, (_, index) => axisMaximum - index * axisStep);
   const x = (index: number) => index / Math.max(1, activity.length - 1) * 100;
   const y = (value: number) => 52 - value / axisMaximum * 46;
-  const path = (key: "created" | "updated" | "deleted") => activity.reduce((value, item, index) => {
-    if (!index) return `M${x(index)},${y(item[key])}`;
-    const previous = activity[index - 1];
-    const midpoint = (x(index - 1) + x(index)) / 2;
-    return `${value} C${midpoint},${y(previous[key])} ${midpoint},${y(item[key])} ${x(index)},${y(item[key])}`;
-  }, "");
-  const areaPath = (key: "created" | "updated" | "deleted") => `${path(key)} L${x(activity.length - 1)},52 L${x(0)},52 Z`;
-  const active = activeIndex === null ? null : activity[activeIndex];
-  return <div className="report-activity" onMouseLeave={() => setActiveIndex(null)}><div className="report-chart-key"><span><i className="created"/>생성</span><span><i className="updated"/>수정</span>{canViewDeletions && <span><i className="deleted"/>삭제</span>}<small>{activity[0]?.day} ~ {activity.at(-1)?.day}</small></div><div className="report-chart-y-axis" aria-hidden="true">{axisValues.map(value => <span key={value} style={{ top: `${y(value) / 56 * 100}%` }}>{value}</span>)}</div><svg viewBox="0 0 100 56" preserveAspectRatio="none" role="img" aria-label="프로젝트 생성일부터 오늘까지의 티켓 활동 추이"><defs><linearGradient id="activity-created-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#1769e8" stopOpacity=".24"/><stop offset="100%" stopColor="#1769e8" stopOpacity="0"/></linearGradient></defs>{[6, 21, 36, 52].map(value => <line key={value} x1="0" y1={value} x2="100" y2={value}/>) }{activity.map((item, index) => <line className="activity-day-line" key={item.day} x1={x(index)} y1="6" x2={x(index)} y2="52"/>)}<path className="activity-created-area" d={areaPath("created")}/><path className="activity-created" d={path("created")}/><path className="activity-updated" d={path("updated")}/>{canViewDeletions && <path className="activity-deleted" d={path("deleted")}/>} {active && <line className="activity-active-line" x1={x(activeIndex || 0)} y1="6" x2={x(activeIndex || 0)} y2="52"/>}{activity.map((item, index) => <g key={`${item.day}-point`}><circle className={`activity-created-point${activeIndex === index ? " is-active" : ""}`} cx={x(index)} cy={y(item.created)} r={activeIndex === index ? "1.15" : ".55"}/><circle className={`activity-updated-point${activeIndex === index ? " is-active" : ""}`} cx={x(index)} cy={y(item.updated)} r={activeIndex === index ? "1.15" : ".55"}/>{canViewDeletions && <circle className={`activity-deleted-point${activeIndex === index ? " is-active" : ""}`} cx={x(index)} cy={y(item.deleted)} r={activeIndex === index ? "1.15" : ".55"}/>}<rect className="activity-hit-area" x={`${Math.max(0, x(index) - 50 / Math.max(1, activity.length - 1))}%`} y="0" width={`${100 / Math.max(1, activity.length - 1)}%`} height="56" tabIndex={0} aria-label={`${item.day}: 생성 ${item.created}건, 수정 ${item.updated}건${canViewDeletions ? `, 삭제 ${item.deleted}건` : ""}`} onMouseEnter={() => setActiveIndex(index)} onFocus={() => setActiveIndex(index)}/></g>)}</svg>{active && <aside className="report-tooltip" role="status"><b>{active.day}</b><div><strong>생성 {active.created}건</strong>{active.created_tickets.length ? <ul>{active.created_tickets.map(ticket => <li key={`created-${ticket.id}`}>{ticket.title}</li>)}</ul> : <span>생성된 티켓 없음</span>}</div><div><strong>수정 {active.updated}건</strong>{active.updated_tickets.length ? <ul>{active.updated_tickets.map(ticket => <li key={`updated-${ticket.id}`}>{ticket.title}</li>)}</ul> : <span>수정된 티켓 없음</span>}</div>{canViewDeletions && <div><strong>삭제 {active.deleted}건</strong>{active.deleted_tickets.length ? <ul>{active.deleted_tickets.map(ticket => <li key={`deleted-${ticket.id}`}>{ticket.title}</li>)}</ul> : <span>삭제된 티켓 없음</span>}</div>}</aside>}<div className="report-chart-dates" style={{ gridTemplateColumns: `repeat(${activity.length}, minmax(0, 1fr))` }}>{activity.map(item => <span key={item.day}>{item.day.slice(5).replace("-", ".")}</span>)}</div></div>;
+  const linePath = activity.map((item, index) => `${index ? "L" : "M"}${x(index)},${y(item[selected.key])}`).join(" ");
+  const areaPath = activity.length ? `${linePath} L100,52 L0,52 Z` : "";
+  const selectedIndex = pinnedIndex !== null && activity[pinnedIndex] ? pinnedIndex : hoveredIndex !== null && activity[hoveredIndex] ? hoveredIndex : null;
+  const selectedDay = pinnedIndex !== null ? activity[pinnedIndex] : null;
+  const dayTickets = selectedDay?.[selected.tickets] || [];
+  const chartWidth = Math.max(680, activity.length * 34);
+  return <div className="report-activity report-activity-focused" ref={chartRef}>
+    <div className="activity-view-tabs" role="group" aria-label="티켓 활동 종류">{visibleTypes.map(type => <button key={type.key} type="button" className={selected.key === type.key ? `is-selected ${type.key}` : ""} aria-pressed={selected.key === type.key} onClick={() => { setSelectedType(type.key); setHoveredIndex(null); setPinnedIndex(null); }}><span>{type.label}</span><strong>{activity.reduce((sum, item) => sum + item[type.key], 0)}건</strong></button>)}</div>
+    <div className={`activity-focused-body${selectedDay ? " has-detail" : ""}`}>
+      <div className="activity-plot-scroll" onMouseLeave={() => setHoveredIndex(null)}><div className="activity-plot" style={{ minWidth: chartWidth }}>
+        <div className="activity-plot-heading"><strong>{selected.label} 건수</strong>{!selectedDay && <span className="activity-range-badge" aria-live="polite"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/></svg>{selectedIndex !== null && activity[selectedIndex] ? `${activity[selectedIndex].day} · ${selected.label} ${activity[selectedIndex][selected.key]}건` : `${activity[0]?.day} ~ ${activity.at(-1)?.day}`}</span>}</div>
+        <div className="report-chart-y-axis" aria-hidden="true">{axisValues.map(value => <span key={value} style={{ top: `${y(value) / 56 * 100}%` }}>{value}</span>)}</div>
+        <svg viewBox="0 0 100 56" preserveAspectRatio="none" role="img" aria-label={`프로젝트 생성일부터 오늘까지의 일자별 티켓 ${selected.label} 추이`}><defs><linearGradient id="activity-selected-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor={selected.color} stopOpacity=".16"/><stop offset="100%" stopColor={selected.color} stopOpacity="0"/></linearGradient></defs>{axisValues.map(value => <line key={value} x1="0" y1={y(value)} x2="100" y2={y(value)}/>)}{activity.map((item, index) => <line className="activity-day-line" key={item.day} x1={x(index)} y1="6" x2={x(index)} y2="52"/>)}<path className="activity-selected-area" d={areaPath}/><path className="activity-selected-line" d={linePath} style={{ stroke: selected.color }}/>{selectedIndex !== null && <line className="activity-active-line" x1={x(selectedIndex)} y1="6" x2={x(selectedIndex)} y2="52"/>}{activity.map((item, index) => <g key={item.day}><circle className={`activity-selected-point${selectedIndex === index ? " is-active" : ""}`} cx={x(index)} cy={y(item[selected.key])} r={selectedIndex === index ? "1" : ".55"} style={{ fill: selected.color }}/><rect className="activity-hit-area" x={`${Math.max(0, x(index) - 50 / Math.max(1, activity.length - 1))}%`} y="0" width={`${100 / Math.max(1, activity.length - 1)}%`} height="56" tabIndex={0} aria-label={`${item.day}: ${selected.label} ${item[selected.key]}건`} onMouseEnter={() => setHoveredIndex(index)} onFocus={() => setHoveredIndex(index)} onClick={() => setPinnedIndex(index)}/></g>)}</svg>
+        <div className="report-chart-dates" style={{ gridTemplateColumns: `repeat(${activity.length}, minmax(0, 1fr))` }}>{activity.map(item => <span key={item.day}>{item.day.slice(5).replace("-", ".")}</span>)}</div>
+        <div className="activity-heatmap" aria-label="날짜별 활동 강도" style={{ gridTemplateColumns: `repeat(${activity.length}, minmax(0, 1fr))` }}>{activity.map((item, index) => <button key={item.day} type="button" className={selectedIndex === index ? "is-active" : ""} style={{ backgroundColor: selected.color, opacity: .12 + item[selected.key] / maximum * .88 }} aria-label={`${item.day}: ${selected.label} ${item[selected.key]}건`} aria-pressed={pinnedIndex === index} onMouseEnter={() => setHoveredIndex(index)} onFocus={() => setHoveredIndex(index)} onClick={() => setPinnedIndex(index)}/>)}</div>
+      </div></div>
+      {selectedDay && <aside className="activity-day-detail" aria-live="polite"><h4>{selectedDay.day}</h4><span>{selected.label}</span><strong style={{ color: selected.color }}>{selectedDay[selected.key]}건</strong><p>프로젝트 기간 합계 {total}건</p><div className="activity-day-tickets"><b>{selected.label}된 티켓</b>{dayTickets.length ? <ul>{dayTickets.map(ticket => <li key={ticket.id}>{selected.key === "deleted" ? ticket.title : <button type="button" onClick={() => onOpenTicket(ticket.id)}>{ticket.title}</button>}</li>)}</ul> : <span>해당 날짜의 티켓이 없습니다.</span>}</div></aside>}
+    </div>
+  </div>;
 }
 
 function ReportMatrix({ title, rows, statusCounts, rowLabel, projectId, onViewTickets }: { title: string; rows: Array<{ label: string; counts: Record<string, number>; total: number; filter: Omit<ReportListFilter, "projectId" | "status"> }>; statusCounts: Record<string, number>; rowLabel: string; projectId: string; onViewTickets: (filter: ReportListFilter) => void }) {
@@ -430,7 +569,7 @@ function ReportMatrix({ title, rows, statusCounts, rowLabel, projectId, onViewTi
   return <article className="report-matrix"><h3>{title}</h3><p>숫자를 누르면 조건에 맞는 티켓 목록을 볼 수 있습니다.</p><div className="report-table-wrap"><table><thead><tr><th scope="col">{rowLabel}</th>{reportStatuses.map(status => <th key={status.label} scope="col">{status.label}</th>)}<th scope="col">합계</th></tr></thead><tbody>{rows.length ? rows.map(row => <tr key={row.label}><th scope="row">{row.label}</th>{reportStatuses.map(status => <td key={status.label}>{countButton(row.counts[status.label] || 0, { ...row.filter, status: status.label }, `${row.label} · ${status.label}`)}</td>)}<td>{countButton(row.total, row.filter, `${row.label} · 전체`)}</td></tr>) : <tr><td colSpan={reportStatuses.length + 2}>표시할 티켓이 없습니다.</td></tr>}</tbody><tfoot><tr><th scope="row">합계</th>{reportStatuses.map(status => <td key={status.label}>{countButton(statusCounts[status.label] || 0, { status: status.label }, `${status.label} · 전체`)}</td>)}<td>{countButton(Object.values(statusCounts).reduce((sum, value) => sum + value, 0), {}, "전체")}</td></tr></tfoot></table></div></article>;
 }
 
-function ProjectReportPanel({ projects, onViewTickets }: { projects: Project[]; onViewTickets: (filter: ReportListFilter) => void }) {
+function ProjectReportPanel({ projects, onViewTickets, onOpenTicket }: { projects: Project[]; onViewTickets: (filter: ReportListFilter) => void; onOpenTicket: (id: string) => void }) {
   const [projectId, setProjectId] = useState("");
   const [report, setReport] = useState<ProjectReport | null>(null);
   const [notice, setNotice] = useState("");
@@ -449,7 +588,7 @@ function ProjectReportPanel({ projects, onViewTickets }: { projects: Project[]; 
   const segments = reportStatuses.reduce<{ offset: number; stops: string[] }>((current, item) => { const value = report?.status_counts[item.label] || 0; const next = current.offset + (total ? value / total * 100 : 0); current.stops.push(`${item.color} ${current.offset}% ${next}%`); current.offset = next; return current; }, { offset: 0, stops: [] });
   const severityRows = severities.map(severity => ({ label: severity, counts: report?.status_by_severity[severity] || {}, total: report?.severity_counts[severity] || 0, filter: { severity } }));
   const assigneeRows = (report?.assignee_statuses || []).slice(0, 8).map(item => ({ label: item.name, counts: item.counts, total: item.total, filter: { assigneeId: item.id || "unassigned" } }));
-  return <section className="dashboard-report"><div className="dashboard-report-head"><div><h2>프로젝트 결과 현황</h2><p>프로젝트 단위로 상태, 위험도, 담당자와 일자별 흐름을 바로 확인합니다.</p></div><label>프로젝트<select value={selectedId} onChange={event => { setNotice(""); setProjectId(event.target.value); }}>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></div>{!projects.length ? <p>표시할 프로젝트가 없습니다.</p> : notice ? <p>{notice}</p> : !report ? <p>프로젝트 보고서를 불러오는 중…</p> : <div className="dashboard-report-grid"><article className="report-status"><h3>{report.project.name}</h3><p>{report.project.status} · 마감 {report.project.due_at || "미정"}</p><div className="report-status-body"><div className="report-donut" style={{ background: total ? `conic-gradient(${segments.stops.join(",")})` : "#eaf0f8" }}><strong>{total}</strong><span>티켓</span></div><dl>{reportStatuses.map(item => { const value = report.status_counts[item.label] || 0; return <div key={item.label}><dt><i style={{ background: item.color }}/>{item.label}</dt><dd>{value}<small>{total ? Math.round(value / total * 100) : 0}%</small></dd></div>; })}</dl></div></article><article className="report-trend"><h3>일자별 티켓 활동</h3><p>{report.can_view_deletions ? "생성 · 수정 · 삭제 건수 기준" : "생성 및 수정 건수 기준"}</p><ActivityChart activity={report.activity} canViewDeletions={report.can_view_deletions}/></article><ReportMatrix title="위험도 × 진행상황" rowLabel="위험도" rows={severityRows} statusCounts={report.status_counts} projectId={report.project.id} onViewTickets={onViewTickets}/><ReportMatrix title="담당자별 진행상황" rowLabel="담당자" rows={assigneeRows} statusCounts={report.status_counts} projectId={report.project.id} onViewTickets={onViewTickets}/></div>}</section>;
+  return <section className="dashboard-report"><div className="dashboard-report-head"><div><h2>프로젝트 결과 현황</h2><p>프로젝트 단위로 상태, 위험도, 담당자와 일자별 흐름을 바로 확인합니다.</p></div><label>프로젝트<select value={selectedId} onChange={event => { setNotice(""); setProjectId(event.target.value); }}>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></div>{!projects.length ? <p>표시할 프로젝트가 없습니다.</p> : notice ? <p>{notice}</p> : !report ? <p>프로젝트 보고서를 불러오는 중…</p> : <div className="dashboard-report-grid"><article className="report-status"><h3>{report.project.name}</h3><p>{report.project.status} · 마감 {report.project.due_at || "미정"}</p><div className="report-status-body"><div className="report-donut" style={{ background: total ? `conic-gradient(${segments.stops.join(",")})` : "#eaf0f8" }}><strong>{total}</strong><span>티켓</span></div><dl>{reportStatuses.map(item => { const value = report.status_counts[item.label] || 0; return <div key={item.label}><dt><i style={{ background: item.color }}/>{item.label}</dt><dd>{value}<small>{total ? Math.round(value / total * 100) : 0}%</small></dd></div>; })}</dl></div></article><article className="report-trend"><h3>일자별 티켓 활동</h3><p>{report.can_view_deletions ? "생성 · 수정 · 삭제 건수 기준" : "생성 및 수정 건수 기준"}</p><ActivityChart key={report.project.id} activity={report.activity} canViewDeletions={report.can_view_deletions} onOpenTicket={onOpenTicket}/></article><ReportMatrix title="위험도 × 진행상황" rowLabel="위험도" rows={severityRows} statusCounts={report.status_counts} projectId={report.project.id} onViewTickets={onViewTickets}/><ReportMatrix title="담당자별 진행상황" rowLabel="담당자" rows={assigneeRows} statusCounts={report.status_counts} projectId={report.project.id} onViewTickets={onViewTickets}/></div>}</section>;
 }
 
 function SeverityIcon({ severity }: { severity: string }) {
@@ -462,7 +601,7 @@ function Dashboard({ tickets, projects, summary, user, onCreate, onList, onMine,
   const severityCounts = [{ label: "Critical", value: summary.severity_critical }, { label: "High", value: summary.severity_high }, { label: "Medium", value: summary.severity_medium }, { label: "Low", value: summary.severity_low }];
   const recent = [...tickets].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 8);
   const highest = Math.max(1, ...statusCounts.map(item => item.value), ...severityCounts.map(item => item.value));
-  return <main><header><div><button className="home-title workspace-title" type="button" onClick={onHome}>QA Ticket Desk</button></div><UserMenu user={user} onAdmin={onAdmin} onLogout={onLogout}/></header><WorkspaceTabs active="dashboard" onChange={onViewChange} onPlanning={onPlanning}/><section className="dashboard-summary"><article><small>전체 티켓</small><strong>{summary.total}</strong></article><article><small>내게 할당됨</small><strong>{summary.mine}</strong></article><article><small>열린 티켓</small><strong>{summary.open}</strong></article><article><small>마감일 임박/지남</small><strong>{summary.due_soon}</strong><em>오늘부터 3일 이내</em></article></section><ProjectReportPanel projects={projects} onViewTickets={onViewTickets}/><section className="dashboard-actions"><h2>빠른 액션</h2><div>{user.role !== "viewer" && <button className="primary" onClick={onCreate}>+ 티켓 생성</button>}<button className="back" onClick={onMine}>내 티켓 보기</button><button className="back" onClick={onList}>티켓 목록 보기</button><span>게임명은 프로젝트로 구분합니다.</span></div></section><div className="dashboard-columns"><section className="dashboard-panel"><h2>상태별 티켓</h2>{statusCounts.map(item => <div className="metric-row" key={item.label}><span>{item.label}</span><i><b style={{ width: `${item.value / highest * 100}%` }}/></i><strong>{item.value}</strong></div>)}</section><section className="dashboard-panel"><h2>심각도별 티켓</h2>{severityCounts.map(item => <div className="metric-row" key={item.label}><span>{item.label}</span><i><b style={{ width: `${item.value / highest * 100}%` }}/></i><strong>{item.value}</strong></div>)}</section></div><section className="dashboard-panel recent-list"><h2>최근 생성·수정된 티켓</h2>{recent.length ? recent.map(ticket => <button className="recent-ticket" type="button" key={ticket.id} onClick={() => onOpen(ticket.id)}><span><b>{ticket.title}</b><small>{ticket.assignee ? `담당: ${ticket.assignee}` : "담당자 미지정"}</small></span><span className={`pill ${ticket.status}`}>{ticket.status}</span><time>{formatDate(ticket.updated_at)}</time></button>) : <p>최근 티켓이 없습니다.</p>}</section></main>;
+  return <main><header><div><button className="home-title workspace-title" type="button" onClick={onHome}>QA Ticket Desk</button></div><UserMenu user={user} onAdmin={onAdmin} onLogout={onLogout}/></header><WorkspaceTabs active="dashboard" onChange={onViewChange} onPlanning={onPlanning}/><section className="dashboard-summary"><article><small>전체 티켓</small><strong>{summary.total}</strong></article><article><small>내게 할당됨</small><strong>{summary.mine}</strong></article><article><small>열린 티켓</small><strong>{summary.open}</strong></article><article><small>마감일 임박/지남</small><strong>{summary.due_soon}</strong><em>오늘부터 3일 이내</em></article></section><ProjectReportPanel projects={projects} onViewTickets={onViewTickets} onOpenTicket={onOpen}/><section className="dashboard-actions"><h2>빠른 액션</h2><div>{user.role !== "viewer" && <button className="primary" onClick={onCreate}>+ 티켓 생성</button>}<button className="back" onClick={onMine}>내 티켓 보기</button><button className="back" onClick={onList}>티켓 목록 보기</button><span>게임명은 프로젝트로 구분합니다.</span></div></section><div className="dashboard-columns"><section className="dashboard-panel"><h2>상태별 티켓</h2>{statusCounts.map(item => <div className="metric-row" key={item.label}><span>{item.label}</span><i><b style={{ width: `${item.value / highest * 100}%` }}/></i><strong>{item.value}</strong></div>)}</section><section className="dashboard-panel"><h2>심각도별 티켓</h2>{severityCounts.map(item => <div className="metric-row" key={item.label}><span>{item.label}</span><i><b style={{ width: `${item.value / highest * 100}%` }}/></i><strong>{item.value}</strong></div>)}</section></div><section className="dashboard-panel recent-list"><h2>최근 생성·수정된 티켓</h2>{recent.length ? recent.map(ticket => <button className="recent-ticket" type="button" key={ticket.id} onClick={() => onOpen(ticket.id)}><span><b>{ticket.title}</b><small>{ticket.assignee ? `담당: ${ticket.assignee}` : "담당자 미지정"}</small></span><span className={`pill ${ticket.status}`}>{ticket.status}</span><time>{formatDate(ticket.updated_at)}</time></button>) : <p>최근 티켓이 없습니다.</p>}</section></main>;
 }
 
 function WorkspaceHeader({ user, active, onHome, onPlanning = () => { window.history.pushState(null, "", "#planning"); window.dispatchEvent(new PopStateEvent("popstate")); }, onAdmin, onLogout, onCreate, onViewChange, showCreate = true }: { user: SessionUser; active: WorkspaceView; onHome: () => void; onPlanning?: () => void; onAdmin: () => void; onProjects: () => void; onLogout: () => void; onCreate: () => void; onViewChange: (view: WorkspaceView) => void; showCreate?: boolean }) {
@@ -470,8 +609,71 @@ function WorkspaceHeader({ user, active, onHome, onPlanning = () => { window.his
   return <><header><div><button className="home-title workspace-title" type="button" onClick={onHome}>QA Ticket Desk</button></div><UserMenu user={user} onAdmin={onAdmin} onLogout={onLogout}/></header><WorkspaceTabs active={active} onChange={onViewChange} onPlanning={onPlanning}/></>;
 }
 
+function TicketTemplateSettings() {
+  const [templates, setTemplates] = useState<TicketTemplate[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [name, setName] = useState("");
+  const [content, setContent] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const refresh = async () => {
+    const response = await fetch("/api/auth/ticket-templates", { cache: "no-store" });
+    if (!response.ok) throw new Error("템플릿 목록을 불러오지 못했습니다.");
+    const data = await response.json() as { templates: TicketTemplate[] };
+    setTemplates(data.templates);
+  };
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/auth/ticket-templates", { cache: "no-store", signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error("템플릿 목록을 불러오지 못했습니다.");
+      return response.json() as Promise<{ templates: TicketTemplate[] }>;
+    }).then(data => setTemplates(data.templates)).catch(error => { if (!controller.signal.aborted) setNotice(error instanceof Error ? error.message : "템플릿 목록을 불러오지 못했습니다."); });
+    return () => controller.abort();
+  }, []);
+  const clear = () => { setSelectedId(""); setName(""); setContent(""); setNotice(""); };
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim() || !content.trim()) return setNotice("템플릿 이름과 내용을 입력해 주세요.");
+    setBusy(true); setNotice("");
+    try {
+      const response = await fetch(selectedId ? `/api/auth/ticket-templates/${selectedId}` : "/api/auth/ticket-templates", { method: selectedId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, content }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || "템플릿을 저장하지 못했습니다.");
+      await refresh();
+      clear();
+      setNotice("템플릿을 저장했습니다.");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "템플릿을 저장하지 못했습니다."); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!selectedId || !window.confirm("선택한 템플릿을 삭제할까요?")) return;
+    setBusy(true); setNotice("");
+    try {
+      const response = await fetch(`/api/auth/ticket-templates/${selectedId}`, { method: "DELETE" });
+      if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error || "템플릿을 삭제하지 못했습니다."); }
+      await refresh();
+      clear();
+      setNotice("템플릿을 삭제했습니다.");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "템플릿을 삭제하지 못했습니다."); }
+    finally { setBusy(false); }
+  };
+  const selectedIsDefault = templates.some(template => template.id === selectedId && template.is_default === 1);
+  const changeDefault = async () => {
+    if (!selectedId) return;
+    setBusy(true); setNotice("");
+    try {
+      const response = await fetch(`/api/auth/ticket-templates/${selectedId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_default: !selectedIsDefault }) });
+      if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error || "기본 설정을 변경하지 못했습니다."); }
+      await refresh();
+      setNotice(selectedIsDefault ? "기본 템플릿 설정을 해제했습니다." : "기본 템플릿으로 설정했습니다.");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "기본 설정을 변경하지 못했습니다."); }
+    finally { setBusy(false); }
+  };
+  return <section className="my-page-card ticket-template-settings"><div className="ticket-template-heading"><div><h2>티켓 내용 템플릿</h2><p>자주 쓰는 내용을 저장하고 기본 템플릿을 지정하면 티켓 생성 시 자동으로 입력됩니다. 최대 10개까지 저장됩니다.</p></div><button className="back" type="button" onClick={clear}>새 템플릿</button></div>{templates.length > 0 && <div className="ticket-template-list" aria-label="저장된 템플릿">{templates.map(template => <button key={template.id} type="button" className={selectedId === template.id ? "is-selected" : ""} onClick={() => { setSelectedId(template.id); setName(template.name); setContent(template.content); setNotice(""); }}>{template.name}{template.is_default === 1 ? " · 기본" : ""}</button>)}</div>}<form onSubmit={save}><label>템플릿 이름<input value={name} onChange={event => setName(event.target.value)} maxLength={50} placeholder="예: 버그 재현 보고" required/></label><div className="ticket-template-content"><span>기본 내용</span><RichTextEditor value={content} onChange={setContent}/></div><div className="ticket-template-actions"><button className="primary" type="submit" disabled={busy || (!selectedId && templates.length >= 10)}>{busy ? "처리 중…" : selectedId ? "수정 저장" : "템플릿 저장"}</button>{selectedId && <button className="back" type="button" disabled={busy} onClick={() => { void changeDefault(); }}>{selectedIsDefault ? "기본 설정 안 함" : "기본 설정"}</button>}{selectedId && <button className="danger" type="button" disabled={busy} onClick={() => { void remove(); }}>삭제</button>}</div>{notice && <p className="editor-notice" role="status">{notice}</p>}</form></section>;
+}
+
 function MyPage({ user, onHome, onAdmin, onProjects, onLogout }: { user: SessionUser; onHome: () => void; onAdmin: () => void; onProjects: () => void; onLogout: () => void }) {
-  return <main className="my-page"><header><div><button className="home-title workspace-title" type="button" onClick={onHome}>QA Ticket Desk</button></div></header><section className="my-page-card"><h1>{user.name}</h1><dl><div><dt>이메일</dt><dd>{user.email}</dd></div><div><dt>권한</dt><dd>{roleName(user.role)}</dd></div></dl><div className="my-page-actions">{user.role === "admin" && <button className="back" type="button" onClick={onProjects}>프로젝트 관리</button>}{user.role === "admin" && <button className="back" type="button" onClick={onAdmin}>관리자 페이지</button>}<button className="danger" type="button" onClick={onLogout}>로그아웃</button></div></section></main>;
+  return <main className="my-page"><header><div><button className="home-title workspace-title" type="button" onClick={onHome}>QA Ticket Desk</button></div></header><section className="my-page-card"><h1>{user.name}</h1><dl><div><dt>이메일</dt><dd>{user.email}</dd></div><div><dt>권한</dt><dd>{roleName(user.role)}</dd></div></dl><div className="my-page-actions">{user.role === "admin" && <button className="back" type="button" onClick={onProjects}>프로젝트 관리</button>}{user.role === "admin" && <button className="back" type="button" onClick={onAdmin}>관리자 페이지</button>}<button className="danger" type="button" onClick={onLogout}>로그아웃</button></div></section>{user.role !== "viewer" && <TicketTemplateSettings/>}</main>;
 }
 
 function BoardView({ tickets, games, project, user, onOpen, onHome, onAdmin, onProjects, onLogout, onCreate, onViewChange }: { tickets: Ticket[]; games: string[]; project: string; user: SessionUser; onOpen: (id: string) => void; onHome: () => void; onAdmin: () => void; onProjects: () => void; onLogout: () => void; onCreate: () => void; onViewChange: (view: WorkspaceView) => void }) {
@@ -615,6 +817,7 @@ export default function TicketDesk() {
   const [view, setView] = useState<"dashboard" | "board" | "list" | "timeline" | "projects" | "planning" | "create" | "detail" | "admin" | "mypage">("dashboard");
   const [routeReady, setRouteReady] = useState(false);
   const restoringHistory = useRef(false);
+  const [detailOrigin, setDetailOrigin] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [game, setGame] = useState("전체");
@@ -660,7 +863,7 @@ export default function TicketDesk() {
   useEffect(() => {
     if (!ready || !user || !routeReady) return;
     if (restoringHistory.current) { restoringHistory.current = false; return; }
-    const route = view === "detail" && detail ? `#ticket/${detail.ticket.id}` : `#${view}`;
+    const route = detail ? `#ticket/${detail.ticket.id}` : `#${view}`;
     if (window.location.hash !== route) window.history.pushState(null, "", route);
   }, [detail, ready, routeReady, user, view]);
   useEffect(() => {
@@ -670,9 +873,10 @@ export default function TicketDesk() {
       const ticketId = window.location.hash.match(/^#ticket\/([^/]+)(?:\/edit)?$/)?.[1];
       if (ticketId) {
         const response = await fetch(`/api/tickets/${ticketId}`, { cache: "no-store" });
-        if (response.ok) { const data = await response.json() as Detail; setDetail({ ...data, ticket: normalizeTicket(data.ticket) }); setView("detail"); setRouteReady(true); return; }
+        if (response.ok) { const data = await response.json() as Detail; setDetail({ ...data, ticket: normalizeTicket(data.ticket) }); setRouteReady(true); return; }
       }
       const route = window.location.hash.replace("#", "");
+      setDetail(null);
       setView(route === "tickets" || route === "list" ? "list" : route === "board" ? "board" : route === "timeline" ? "timeline" : route === "projects" ? "projects" : route === "planning" ? "planning" : route === "create" ? "create" : route === "admin" ? "admin" : route === "mypage" ? "mypage" : "dashboard");
       setRouteReady(true);
     };
@@ -680,7 +884,7 @@ export default function TicketDesk() {
     window.addEventListener("popstate", restorePage);
     return () => window.removeEventListener("popstate", restorePage);
   }, [ready, user]);
-  const open = async (id: string) => { const response = await fetch(`/api/tickets/${id}`, { cache: "no-store" }); if (!response.ok) return; const data = await response.json() as Detail; setDetail({ ...data, ticket: normalizeTicket(data.ticket) }); setView("detail"); };
+  const open = async (id: string) => { const origin = detail ? null : window.location.hash; const response = await fetch(`/api/tickets/${id}`, { cache: "no-store" }); if (!response.ok) return; const data = await response.json() as Detail; if (origin) setDetailOrigin(origin); setDetail({ ...data, ticket: normalizeTicket(data.ticket) }); };
   const remove = async () => { if (!selected.length || !confirm(`${selected.length}개 티켓을 휴지통으로 이동할까요?`)) return; await Promise.all(selected.map(id => fetch(`/api/tickets/${id}`, { method: "DELETE" }))); setSelected([]); void Promise.all([load(), loadProjects()]); };
   const boardGames = useMemo(() => [...new Set(boardTickets.map(ticket => ticket.game).filter(Boolean))].sort(), [boardTickets]);
   const filtered = tickets;
@@ -695,7 +899,7 @@ export default function TicketDesk() {
   const showWorkspace = (workspaceView: WorkspaceView) => { setView(workspaceView); if (workspaceView === "timeline") void load(200, false); else if (workspaceView === "dashboard") void load(); };
   const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); setUser(null); };
   const createTicket = () => { setDetail(null); setView("create"); };
-  const home = () => { setDetail(null); setView("dashboard"); void load(); };
+  const home = () => { setDetailOrigin(null); setDetail(null); setView("dashboard"); void load(); };
   const admin = () => setView("admin");
   const openProjects = () => { setDetail(null); setView("projects"); void loadProjects(); };
   if (view === "admin") return <AdminPanel user={user} onHome={home}/>;
@@ -704,14 +908,22 @@ export default function TicketDesk() {
   const resetListFilters = () => { setListPage(1); setListProjectIds([]); setListStatuses([]); setListSeverities([]); setListAssigneeIds([]); setListCreatorIds([]); setListDue(""); setListKeyword(""); setListSort("updated"); setShowAdvancedFilters(false); };
   const viewReportTickets = (filter: ReportListFilter) => { setSelected([]); setListPage(1); setListProjectIds([filter.projectId]); setListStatuses(filter.status ? [filter.status] : []); setListSeverities(filter.severity ? [filter.severity] : []); setListAssigneeIds(filter.assigneeId ? [filter.assigneeId] : []); setListCreatorIds([]); setListDue(""); setListKeyword(""); setListSort("updated"); setShowAdvancedFilters(Boolean(filter.severity)); setView("list"); };
   const hasListFilters = Boolean(listProjectIds.length || listStatuses.length || listSeverities.length || listAssigneeIds.length || listCreatorIds.length || listDue || listKeyword.trim() || listSort !== "updated");
-  if (view === "dashboard") return <Dashboard tickets={tickets} projects={projects} summary={summary} user={user} onCreate={createTicket} onList={() => setView("list")} onMine={() => { setListPage(1); setListAssigneeIds([user.id]); setView("list"); }} onOpen={open} onPlanning={planning} onAdmin={admin} onLogout={logout} onHome={home} onViewChange={showWorkspace} onViewTickets={viewReportTickets}/>;
+  const closeDetail = () => {
+    const destination = detailOrigin || "#dashboard";
+    setDetailOrigin(null);
+    setDetail(null);
+    if (!detailOrigin) setView("dashboard");
+    window.history.replaceState(null, "", destination);
+  };
+  const refreshDetail = async () => { if (detail) await open(detail.ticket.id); await load(); };
+  const withDetail = (page: React.ReactNode) => <>{page}{detail && <TicketDetailDialog onClose={closeDetail}><TicketEditor key={detail.ticket.id} user={user} detail={detail} projects={projects} inDialog onHome={home} onBack={closeDetail} onSaved={ticketId => { if (ticketId) { void open(ticketId); } else { closeDetail(); void Promise.all([load(), loadProjects()]); } }} onRefresh={() => { void refreshDetail(); }}/></TicketDetailDialog>}</>;
+  if (view === "dashboard") return withDetail(<Dashboard tickets={tickets} projects={projects} summary={summary} user={user} onCreate={createTicket} onList={() => setView("list")} onMine={() => { setListPage(1); setListAssigneeIds([user.id]); setView("list"); }} onOpen={open} onPlanning={planning} onAdmin={admin} onLogout={logout} onHome={home} onViewChange={showWorkspace} onViewTickets={viewReportTickets}/>);
   if (view === "planning") return <ProjectPlanning user={user} projects={projects} onHome={home} onMyPage={() => setView("mypage")} onAdmin={admin} onLogout={logout}/>;
   if (view === "projects") return user.role === "admin" ? <ProjectPanel projects={projects} onHome={home} onSaved={() => { void Promise.all([load(), loadProjects()]); }}/> : <main><p className="empty">프로젝트 관리는 관리자만 할 수 있습니다.</p></main>;
-  if (view === "board") return <BoardView tickets={boardTickets} games={boardGames} project={game} user={user} onOpen={open} onHome={home} onAdmin={admin} onProjects={openProjects} onLogout={logout} onCreate={createTicket} onViewChange={showWorkspace}/>;
-  if (view === "timeline") return <TimelineView tickets={tickets} projects={projects} project={game} user={user} onProjectChange={setGame} onOpen={open} onHome={home} onAdmin={admin} onProjects={openProjects} onLogout={logout} onCreate={createTicket} onViewChange={showWorkspace}/>;
-  const refreshDetail = async () => { if (detail) await open(detail.ticket.id); await load(); };
-  if (view === "create" || view === "detail") return <TicketEditor key={view === "detail" ? detail?.ticket.id : "create"} user={user} detail={view === "detail" ? detail : null} projects={projects} onHome={() => { setDetail(null); setView("dashboard"); void load(); }} onSaved={ticketId => { if (ticketId) { void open(ticketId); return; } setDetail(null); setView("list"); void Promise.all([load(), loadProjects()]); }} onRefresh={() => { void refreshDetail(); }}/ >;
-  return <main>
+  if (view === "board") return withDetail(<BoardView tickets={boardTickets} games={boardGames} project={game} user={user} onOpen={open} onHome={home} onAdmin={admin} onProjects={openProjects} onLogout={logout} onCreate={createTicket} onViewChange={showWorkspace}/>);
+  if (view === "timeline") return withDetail(<TimelineView tickets={tickets} projects={projects} project={game} user={user} onProjectChange={setGame} onOpen={open} onHome={home} onAdmin={admin} onProjects={openProjects} onLogout={logout} onCreate={createTicket} onViewChange={showWorkspace}/>);
+  if (view === "create") return <TicketEditor key="create" user={user} detail={null} projects={projects} onHome={() => { setDetail(null); setView("dashboard"); void load(); }} onBack={home} onSaved={() => { setDetail(null); setView("list"); void Promise.all([load(), loadProjects()]); }} onRefresh={() => { void refreshDetail(); }}/ >;
+  return withDetail(<main>
     <WorkspaceHeader user={user} active="list" onHome={home} onPlanning={planning} onAdmin={admin} onProjects={openProjects} onLogout={logout} onCreate={createTicket} onViewChange={showWorkspace} showCreate={false}/>
     <section className={`list-filters${showAdvancedFilters ? " is-expanded" : ""}`} aria-label="티켓 필터">
       <div className="list-filter-main">
@@ -728,5 +940,5 @@ export default function TicketDesk() {
       {(listProjectIds.length || listStatuses.length || listAssigneeIds.length || listCreatorIds.length || listSeverities.length || listDue || listKeyword.trim()) && <div className="applied-filters" aria-label="적용 중인 필터"><b>적용 중인 필터</b>{listProjectIds.map(id => <button type="button" key={`project-${id}`} onClick={() => setListProjectIds(values => values.filter(value => value !== id))}>프로젝트: {listFilterOptions.projects.find(project => project.id === id)?.name || id} ×</button>)}{listStatuses.map(status => <button type="button" key={`status-${status}`} onClick={() => setListStatuses(values => values.filter(value => value !== status))}>진행상황: {status} ×</button>)}{listAssigneeIds.map(id => <button type="button" key={`assignee-${id}`} onClick={() => setListAssigneeIds(values => values.filter(value => value !== id))}>담당자: {listFilterOptions.assignees.find(person => person.id === id)?.name || id} ×</button>)}{listCreatorIds.map(id => <button type="button" key={`creator-${id}`} onClick={() => setListCreatorIds(values => values.filter(value => value !== id))}>작성자: {listFilterOptions.creators.find(person => person.id === id)?.name || id} ×</button>)}{listSeverities.map(severity => <button type="button" key={`severity-${severity}`} onClick={() => setListSeverities(values => values.filter(value => value !== severity))}>심각도: {severity} ×</button>)}{listDue && <button type="button" onClick={() => setListDue("")}>마감일: {{ overdue: "지남", today: "오늘", three_days: "3일 이내", week: "이번 주", none: "미설정" }[listDue]} ×</button>}{listKeyword.trim() && <button type="button" onClick={() => setListKeyword("")}>검색: {listKeyword.trim()} ×</button>}</div>}
     </section>
     <section className="list-table" aria-label="티켓 목록"><div className="list-row list-head"><input aria-label="모두 선택" type="checkbox" disabled={!selectable.length} checked={Boolean(selectable.length) && selected.length === selectable.length} onChange={event => setSelected(event.target.checked ? selectable.map(ticket => ticket.id) : [])}/><b>요약</b><b>상태</b><b>담당자</b><b>마감일</b><b>심각도</b></div>{filtered.length ? filtered.map((ticket, index) => <div className="list-row" key={ticket.id}><input type="checkbox" aria-label={`${ticket.title} 선택`} disabled={!selectable.some(item => item.id === ticket.id)} checked={selected.includes(ticket.id)} onChange={event => setSelected(event.target.checked ? [...selected, ticket.id] : selected.filter(id => id !== ticket.id))}/><button className="list-summary" onClick={() => open(ticket.id)}><span>{ticketCode(ticket) || `#${(listPage - 1) * 50 + index + 1}`}</span><b>{ticket.title}</b><small>{ticket.game || "프로젝트 미지정"}</small></button><span className={`list-status pill ${ticket.status}`}>{ticket.status}</span><span className="list-assignee">{ticket.assignee || "미지정"}</span><time className="list-due" dateTime={ticket.due_at || undefined}>{ticket.due_at || "미정"}</time><span className={`list-severity list-severity-${ticket.severity.toLowerCase()}`}><SeverityIcon severity={ticket.severity}/>{ticket.severity}</span></div>) : <p className="empty">조회할 목록이 없습니다.</p>}</section><PageControls label="티켓 목록" page={listPage} total={listTotal} pageSize={50} onChange={setListPage}/>
-  </main>;
+  </main>);
 }

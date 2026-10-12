@@ -21,6 +21,7 @@ export const ensureTicketSchema = () => schemaReady ||= env.DB.batch([
   env.DB.prepare(`CREATE TABLE IF NOT EXISTS planning_documents (id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL, project_id TEXT, version TEXT, tags TEXT NOT NULL DEFAULT '', source_file_name TEXT NOT NULL, text_content TEXT NOT NULL, object_key TEXT NOT NULL, size INTEGER NOT NULL, created_by_id TEXT NOT NULL, created_by_name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
   env.DB.prepare(`CREATE TABLE IF NOT EXISTS planning_items (id TEXT PRIMARY KEY, kind TEXT NOT NULL, project_id TEXT, code TEXT, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, development_status TEXT, qa_status TEXT, tags TEXT NOT NULL DEFAULT '', linked_document_ids TEXT NOT NULL DEFAULT '[]', linked_ticket_ids TEXT NOT NULL DEFAULT '[]', created_by_id TEXT NOT NULL, created_by_name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
   env.DB.prepare(`CREATE TABLE IF NOT EXISTS project_plans (project_id TEXT PRIMARY KEY, concept TEXT NOT NULL DEFAULT '', target_users TEXT NOT NULL DEFAULT '', release_scope TEXT NOT NULL DEFAULT '', success_criteria TEXT NOT NULL DEFAULT '', stages_json TEXT NOT NULL DEFAULT '[]', updated_by_id TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+  env.DB.prepare(`CREATE TABLE IF NOT EXISTS ticket_templates (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
   env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket_id ON ticket_history(ticket_id, created_at DESC)`),
   env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`),
   env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id,project_id)`),
@@ -28,6 +29,7 @@ export const ensureTicketSchema = () => schemaReady ||= env.DB.batch([
   env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_planning_documents_project_updated ON planning_documents(project_id,updated_at DESC)`),
   env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_planning_documents_category_updated ON planning_documents(category,updated_at DESC)`),
   env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_planning_items_kind_project_updated ON planning_items(kind,project_id,updated_at DESC)`),
+  env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ticket_templates_user_updated ON ticket_templates(user_id,updated_at DESC)`),
 ]).then(async () => {
   const addColumn = async (column: string) => { try { await env.DB.prepare(`ALTER TABLE tickets ADD COLUMN ${column}`).run(); } catch (error) { if (!String(error).includes("duplicate column name")) throw error; } };
   await addColumn("game TEXT");
@@ -45,6 +47,8 @@ export const ensureTicketSchema = () => schemaReady ||= env.DB.batch([
   await addColumn("assignee_id TEXT");
   await addColumn("issue_reason TEXT");
   await addColumn("ticket_number INTEGER");
+  try { await env.DB.prepare("ALTER TABLE ticket_templates ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0").run(); } catch (error) { if (!String(error).includes("duplicate column name")) throw error; }
+  await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_templates_one_default ON ticket_templates(user_id) WHERE is_default=1").run();
   try { await env.DB.prepare("ALTER TABLE projects ADD COLUMN ticket_name TEXT").run(); } catch (error) { if (!String(error).includes("duplicate column name")) throw error; }
   await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_ticket_name ON projects(ticket_name) WHERE ticket_name IS NOT NULL").run();
   await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_project_ticket_number ON tickets(project_id,ticket_number) WHERE ticket_number IS NOT NULL").run();

@@ -1,10 +1,13 @@
 import { env } from "cloudflare:workers";
-import { canChangeTicketFields, canTransitionStatus, getProjectAccess } from "../../../access";
+import { getProjectAccess } from "../../../access";
 import { getCurrentUser, recordAudit, recordHistory, unauthorized } from "../../../auth";
 import { ensureTicketSchema } from "../../ticket-schema";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const statuses = ["신규", "진행", "완료", "이슈 아님"];
+const severities = ["Critical", "High", "Medium", "Low"];
+const frequencies = ["항상", "자주", "가끔", "한 번"];
+const detailFields = ["status", "project_id", "assignee_id", "severity", "due_at", "environment", "frequency", "reproduction"] as const;
 type TicketSnapshot = { title: string; status: string; severity: string; game: string | null; project_id: string | null; assignee_id: string | null; assignee: string | null; due_at: string | null; environment: string | null; frequency: string | null; reproduction: string | null; content: string | null; issue_reason: string | null };
 const trackedFields: Array<keyof TicketSnapshot> = ["title", "status", "severity", "game", "assignee_id", "due_at", "environment", "frequency", "reproduction", "content", "issue_reason"];
 const fieldNames: Record<keyof TicketSnapshot, string> = { title: "제목", status: "진행상황", severity: "위험도·심각도", game: "프로젝트", project_id: "프로젝트", assignee_id: "담당자", assignee: "담당자", due_at: "마감일", environment: "발생 환경", frequency: "발생 빈도", reproduction: "재현 횟수", content: "내용", issue_reason: "이슈 아님 사유" };
@@ -14,7 +17,7 @@ async function getTicketWithAccess(request: Request, params: Promise<{ id: strin
   const user = await getCurrentUser(request);
   if (!user) return { response: unauthorized() };
   const { id } = await params;
-  const ticket = await env.DB.prepare("SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL").bind(id).first<TicketSnapshot & { id: string; created_by_id: string; project_id: string }>();
+  const ticket = await env.DB.prepare("SELECT tickets.*,projects.ticket_name FROM tickets LEFT JOIN projects ON projects.id=tickets.project_id WHERE tickets.id=? AND tickets.deleted_at IS NULL").bind(id).first<TicketSnapshot & { id: string; created_by_id: string; project_id: string }>();
   if (!ticket) return { response: json({ error: "티켓을 찾을 수 없습니다." }, 404) };
   const access = await getProjectAccess(user, ticket.project_id);
   if (!access) return { response: json({ error: "이 프로젝트의 티켓을 볼 권한이 없습니다." }, 403) };
@@ -27,7 +30,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const attachments = await env.DB.prepare("SELECT id,name,content_type,size,description,created_at FROM attachments WHERE ticket_id=? ORDER BY created_at").bind(result.id).all();
   const comments = await env.DB.prepare("SELECT * FROM comments WHERE ticket_id=? ORDER BY created_at").bind(result.id).all();
   const history = await env.DB.prepare("SELECT actor_name,action,before_json,after_json,created_at FROM ticket_history WHERE ticket_id=? ORDER BY created_at DESC").bind(result.id).all();
-  return json({ ticket: result.ticket, attachments: attachments.results, comments: comments.results, history: history.results });
+  return json({ ticket: result.ticket, attachments: attachments.results, comments: comments.results, history: history.results, can_edit_details: result.user.role !== "viewer" && result.access.role !== "viewer" });
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -46,27 +49,69 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if ("response" in result) return result.response;
   const { user, ticket: before, access, id } = result;
   const now = new Date().toISOString();
+  if (new URL(request.url).searchParams.get("action") === "details") {
+    if (user.role === "viewer" || access.role === "viewer") return json({ error: "보기 권한은 세부 정보를 수정할 수 없습니다." }, 403);
+    const input = await request.json().catch(() => null) as { field?: string; value?: unknown; issue_reason?: unknown } | null;
+    if (!input || !detailFields.some(field => field === input.field) || typeof input.value !== "string") return json({ error: "수정할 세부 정보를 확인해 주세요." }, 400);
+    const field = input.field as typeof detailFields[number];
+    const value = input.value.trim();
+    const after: TicketSnapshot = { ...before };
+    if (field === "status") {
+      if (!statuses.includes(value)) return json({ error: "잘못된 진행상황입니다." }, 400);
+      after.status = value;
+      after.issue_reason = value === "이슈 아님" ? String(input.issue_reason || "").trim().slice(0, 1000) || before.issue_reason : null;
+      if (value === "이슈 아님" && !after.issue_reason) return json({ error: "이슈 아님 처리 사유를 입력해 주세요." }, 400);
+    } else if (field === "project_id") {
+      const project = await env.DB.prepare("SELECT id,name,due_at FROM projects WHERE id=?").bind(value).first<{ id: string; name: string; due_at: string | null }>();
+      if (!project) return json({ error: "프로젝트를 찾을 수 없습니다." }, 400);
+      const targetAccess = await getProjectAccess(user, project.id);
+      if (!targetAccess || targetAccess.role === "viewer") return json({ error: "대상 프로젝트의 수정 권한이 없습니다." }, 403);
+      after.project_id = project.id;
+      after.game = project.name;
+      after.assignee_id = null;
+      after.assignee = null;
+      after.due_at = project.due_at;
+    } else if (field === "assignee_id") {
+      const assignee = value ? await env.DB.prepare("SELECT users.id,users.name FROM project_members JOIN users ON users.id=project_members.user_id WHERE project_members.project_id=? AND users.id=? AND users.status='approved'").bind(before.project_id, value).first<{ id: string; name: string }>() : null;
+      if (value && !assignee) return json({ error: "프로젝트 멤버만 담당자로 지정할 수 있습니다." }, 400);
+      after.assignee_id = assignee?.id || null;
+      after.assignee = assignee?.name || null;
+    } else if (field === "severity") {
+      if (!severities.includes(value)) return json({ error: "잘못된 위험도·심각도입니다." }, 400);
+      after.severity = value;
+    } else if (field === "due_at") {
+      if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) return json({ error: "마감일 형식을 확인해 주세요." }, 400);
+      after.due_at = value || null;
+    } else if (field === "frequency") {
+      if (!frequencies.includes(value)) return json({ error: "잘못된 발생 빈도입니다." }, 400);
+      after.frequency = value;
+    } else if (field === "environment") after.environment = value.slice(0, 500);
+    else after.reproduction = value.slice(0, 100);
+    const changedFields = trackedFields.filter(key => (before[key] || "") !== (after[key] || ""));
+    if (before.project_id !== after.project_id) changedFields.push("project_id");
+    if (!changedFields.length) return json({ ok: true, unchanged: true });
+    await env.DB.prepare("UPDATE tickets SET status=?,severity=?,game=?,project_id=?,assignee_id=?,assignee=?,due_at=?,environment=?,frequency=?,reproduction=?,issue_reason=?,updated_at=?,updated_by_id=?,updated_by_name=? WHERE id=? AND deleted_at IS NULL").bind(after.status,after.severity,after.game,after.project_id,after.assignee_id,after.assignee,after.due_at,after.environment,after.frequency,after.reproduction,after.issue_reason,now,user.id,user.name,id).run();
+    await recordHistory(user, `티켓 수정: ${[...new Set(changedFields.map(key => fieldNames[key]))].join(", ")}`, id, before, after);
+    await recordAudit(request, "티켓 세부 정보 수정", "ticket", id, "success", user, null, { fields: changedFields });
+    return json({ ok: true, updated_at: now });
+  }
+  if (user.role === "viewer" || access.role === "viewer" || before.created_by_id !== user.id) return json({ error: "티켓 작성자만 전체 내용을 수정할 수 있습니다." }, 403);
   const body = await request.json() as Record<string, string>;
   const targetProjectId = body.project_id || before.project_id;
   const project = await env.DB.prepare("SELECT id,name,due_at FROM projects WHERE id=?").bind(targetProjectId).first<{ id: string; name: string; due_at: string }>();
   if (!project) return json({ error: "프로젝트를 찾을 수 없습니다." }, 400);
   const targetAccess = await getProjectAccess(user, project.id);
-  if (!targetAccess) return json({ error: "대상 프로젝트에 접근할 권한이 없습니다." }, 403);
+  if (!targetAccess || targetAccess.role === "viewer") return json({ error: "대상 프로젝트에 수정할 권한이 없습니다." }, 403);
   const assigneeId = body.assignee_id || null;
   const assignee = assigneeId ? await env.DB.prepare("SELECT users.id,users.name FROM project_members JOIN users ON users.id=project_members.user_id WHERE project_members.project_id=? AND users.id=? AND users.status='approved'").bind(project.id, assigneeId).first<{ id: string; name: string }>() : null;
   if (assigneeId && !assignee) return json({ error: "프로젝트 멤버만 담당자로 지정할 수 있습니다." }, 400);
   const nextStatus = body.status || before.status;
   if (!statuses.includes(nextStatus)) return json({ error: "잘못된 진행상황입니다." }, 400);
-  const effectiveAccess = project.id === before.project_id ? access : targetAccess;
-  if (!canTransitionStatus(effectiveAccess, before.status, nextStatus, before.assignee_id === user.id)) return json({ error: "이 진행상황으로 변경할 권한이 없습니다." }, 403);
   const after: TicketSnapshot = { title: (body.title || before.title || "").trim().slice(0, 100), status: nextStatus, severity: body.severity || before.severity, game: project.name, project_id: project.id, assignee_id: assignee?.id || null, assignee: assignee?.name || null, due_at: body.due_at || project.due_at || null, environment: body.environment || "", frequency: body.frequency || "항상", reproduction: body.reproduction || "", content: body.content || "", issue_reason: (body.issue_reason || "").trim().slice(0, 1000) || null };
   if (!after.title) return json({ error: "제목을 입력해 주세요." }, 400);
   if (after.status === "이슈 아님" && !after.issue_reason) return json({ error: "이슈 아님 처리 사유를 입력해 주세요." }, 400);
   const changedFields = trackedFields.filter(field => (before[field] || "") !== (after[field] || ""));
   if (!changedFields.length) return json({ ok: true, unchanged: true, updated_at: now });
-  const nonStatusChange = changedFields.some(field => field !== "status");
-  if (nonStatusChange && !canChangeTicketFields(effectiveAccess)) return json({ error: "QA 또는 프로젝트 관리자만 티켓 정보를 수정할 수 있습니다." }, 403);
-  if (before.project_id !== project.id && (!canChangeTicketFields(access) || !canChangeTicketFields(targetAccess))) return json({ error: "원본과 대상 프로젝트 모두에서 QA 또는 프로젝트 관리자 권한이 필요합니다." }, 403);
   await env.DB.prepare("UPDATE tickets SET title=?,status=?,severity=?,game=?,project_id=?,assignee_id=?,assignee=?,due_at=?,environment=?,frequency=?,reproduction=?,content=?,issue_reason=?,updated_at=?,updated_by_id=?,updated_by_name=? WHERE id=? AND deleted_at IS NULL").bind(after.title,after.status,after.severity,after.game,after.project_id,after.assignee_id,after.assignee,after.due_at,after.environment,after.frequency,after.reproduction,after.content,after.issue_reason,now,user.id,user.name,id).run();
   await recordHistory(user, `티켓 수정: ${changedFields.map(field => fieldNames[field]).join(", ")}`, id, before, after);
   await recordAudit(request, "티켓 수정", "ticket", id, "success", user, null, { fields: changedFields });
