@@ -22,7 +22,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
   const rangeStart = new Date(project.created_at || project.start_date || Date.now());
   rangeStart.setHours(0, 0, 0, 0);
-  const dueAt = new Date(project.due_at || rangeStart);
+  const dueAt = new Date(project.due_at || Date.now());
   dueAt.setHours(0, 0, 0, 0);
   const today = new Date();
   today.setHours(0, 0, 0, 0);

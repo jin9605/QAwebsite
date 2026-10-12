@@ -18,9 +18,9 @@ export async function POST(request: Request) {
   if (user.role !== "admin") return json({ error: "관리자만 프로젝트를 만들 수 있습니다." }, 403);
   const body = await request.json() as Record<string, string>;
   const name = (body.name || "").trim();
-  const dueAt = body.due_at || "";
+  const dueAt = (body.due_at || "").trim();
   if (!name || name.length > 100) return json({ error: "프로젝트명은 1~100자로 입력해 주세요." }, 400);
-  if (!dueAt) return json({ error: "프로젝트 마감일을 선택해 주세요." }, 400);
+  if (dueAt && !/^\d{4}-\d{2}-\d{2}$/.test(dueAt)) return json({ error: "프로젝트 마감일 형식을 확인해 주세요." }, 400);
   const id = crypto.randomUUID();
   const suppliedTicketName = (body.ticket_name || "").trim().toUpperCase();
   const ticketName = /^[A-Z][A-Z0-9]{1,9}$/.test(suppliedTicketName) ? suppliedTicketName : `P${id.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
