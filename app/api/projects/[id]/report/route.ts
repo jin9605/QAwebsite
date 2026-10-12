@@ -34,7 +34,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     env.DB.prepare("SELECT status,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL GROUP BY status").bind(id).all<{ status: string; count: number }>(),
     env.DB.prepare("SELECT severity,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL GROUP BY severity").bind(id).all<{ severity: string; count: number }>(),
     env.DB.prepare("SELECT severity,status,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL GROUP BY severity,status").bind(id).all<{ severity: string; status: string; count: number }>(),
-    env.DB.prepare("SELECT COALESCE(NULLIF(assignee,''),'미지정') AS assignee,status,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL GROUP BY COALESCE(NULLIF(assignee,''),'미지정'),status ORDER BY assignee").bind(id).all<{ assignee: string; status: string; count: number }>(),
+    env.DB.prepare("SELECT assignee_id,COALESCE(NULLIF(assignee,''),'미지정') AS assignee,status,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL GROUP BY assignee_id,COALESCE(NULLIF(assignee,''),'미지정'),status ORDER BY assignee").bind(id).all<{ assignee_id: string | null; assignee: string; status: string; count: number }>(),
     env.DB.prepare("SELECT substr(created_at,1,10) AS day,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY substr(created_at,1,10)").bind(id, rangeStart.toISOString(), rangeEndExclusive.toISOString()).all<{ day: string; count: number }>(),
     env.DB.prepare("SELECT substr(updated_at,1,10) AS day,COUNT(*) AS count FROM tickets WHERE project_id=? AND deleted_at IS NULL AND updated_at <> created_at AND updated_at >= ? AND updated_at < ? GROUP BY substr(updated_at,1,10)").bind(id, rangeStart.toISOString(), rangeEndExclusive.toISOString()).all<{ day: string; count: number }>(),
     env.DB.prepare(`SELECT id,title,substr(created_at,1,10) AS created_day,
@@ -53,8 +53,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   severityResult.results.forEach(row => { if (row.severity in severityCounts) severityCounts[row.severity as typeof severities[number]] += Number(row.count) || 0; });
   const statusBySeverity = Object.fromEntries(severities.map(severity => [severity, Object.fromEntries(statuses.map(status => [status, 0]))])) as Record<typeof severities[number], Record<typeof statuses[number], number>>;
   statusSeverityResult.results.forEach(row => { const status = normalized[row.status] || row.status; if (row.severity in statusBySeverity && status in counts) statusBySeverity[row.severity as typeof severities[number]][status as typeof statuses[number]] += Number(row.count) || 0; });
-  const assigneeMap = new Map<string, Record<typeof statuses[number], number>>();
-  assigneeResult.results.forEach(row => { const status = normalized[row.status] || row.status; if (!(status in counts)) return; const values = assigneeMap.get(row.assignee) || Object.fromEntries(statuses.map(item => [item, 0])) as Record<typeof statuses[number], number>; values[status as typeof statuses[number]] += Number(row.count) || 0; assigneeMap.set(row.assignee, values); });
+  const assigneeMap = new Map<string, { id: string | null; name: string; counts: Record<typeof statuses[number], number> }>();
+  assigneeResult.results.forEach(row => { const status = normalized[row.status] || row.status; if (!(status in counts)) return; const key = row.assignee_id || "unassigned"; const assignee = assigneeMap.get(key) || { id: row.assignee_id, name: row.assignee, counts: Object.fromEntries(statuses.map(item => [item, 0])) as Record<typeof statuses[number], number> }; assignee.counts[status as typeof statuses[number]] += Number(row.count) || 0; assigneeMap.set(key, assignee); });
   const created = new Map(createdResult.results.map(row => [row.day, Number(row.count) || 0]));
   const updated = new Map(updatedResult.results.map(row => [row.day, Number(row.count) || 0]));
   const deleted = new Map(deletedResult.results.map(row => [row.day, Number(row.count) || 0]));
@@ -71,5 +71,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const key = dateKey(day);
     return { day: key, created: created.get(key) || 0, updated: updated.get(key) || 0, deleted: deleted.get(key) || 0, created_tickets: createdTickets.get(key) || [], updated_tickets: updatedTickets.get(key) || [], deleted_tickets: deletedTickets.get(key) || [] };
   });
-  return json({ project, status_counts: counts, severity_counts: severityCounts, status_by_severity: statusBySeverity, assignee_statuses: [...assigneeMap.entries()].map(([name, values]) => ({ name, counts: values, total: Object.values(values).reduce((sum, value) => sum + value, 0) })), can_view_deletions: user.role === "admin", activity });
+  return json({ project, status_counts: counts, severity_counts: severityCounts, status_by_severity: statusBySeverity, assignee_statuses: [...assigneeMap.values()].map(assignee => ({ id: assignee.id, name: assignee.name, counts: assignee.counts, total: Object.values(assignee.counts).reduce((sum, value) => sum + value, 0) })), can_view_deletions: user.role === "admin", activity });
 }

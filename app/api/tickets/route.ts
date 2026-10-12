@@ -32,7 +32,15 @@ export async function GET(request: Request) {
   addMultiFilter("tickets.project_id", projectIds);
   addMultiFilter("tickets.status", selectedStatuses);
   addMultiFilter("tickets.severity", selectedSeverities);
-  addMultiFilter("tickets.assignee_id", assigneeIds);
+  if (assigneeIds.includes("unassigned")) {
+    const assignedIds = assigneeIds.filter(id => id !== "unassigned");
+    const assigneeConditions = ["tickets.assignee_id IS NULL", "tickets.assignee_id=''"];
+    if (assignedIds.length) {
+      assigneeConditions.push(`tickets.assignee_id IN (${assignedIds.map(() => "?").join(",")})`);
+      values.push(...assignedIds);
+    }
+    where.push(`(${assigneeConditions.join(" OR ")})`);
+  } else addMultiFilter("tickets.assignee_id", assigneeIds);
   addMultiFilter("tickets.created_by_id", creatorIds);
   if (due === "overdue") where.push("tickets.due_at IS NOT NULL AND tickets.due_at<>'' AND date(tickets.due_at)<date('now')");
   if (due === "today") where.push("date(tickets.due_at)=date('now')");
@@ -79,7 +87,7 @@ export async function POST(request: Request) {
   if (!user) return unauthorized();
   const body = await request.json() as Record<string, string>;
   const title = (body.title || "").trim();
-  if (!title || title.length > 50) return json({ error: "제목은 1~50자로 입력해 주세요." }, 400);
+  if (!title || title.length > 100) return json({ error: "제목은 1~100자로 입력해 주세요." }, 400);
   const projectId = body.project_id || "";
   const project = projectId ? await env.DB.prepare("SELECT id,name,due_at,ticket_name FROM projects WHERE id=?").bind(projectId).first<{ id: string; name: string; due_at: string; ticket_name: string | null }>() : null;
   if (!project) return json({ error: "티켓을 연결할 프로젝트를 선택해 주세요." }, 400);

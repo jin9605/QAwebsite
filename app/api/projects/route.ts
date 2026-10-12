@@ -18,12 +18,12 @@ export async function POST(request: Request) {
   if (user.role !== "admin") return json({ error: "관리자만 프로젝트를 만들 수 있습니다." }, 403);
   const body = await request.json() as Record<string, string>;
   const name = (body.name || "").trim();
-  const ticketName = (body.ticket_name || "").trim().toUpperCase();
   const dueAt = body.due_at || "";
   if (!name || name.length > 100) return json({ error: "프로젝트명은 1~100자로 입력해 주세요." }, 400);
-  if (!/^[A-Z][A-Z0-9]{1,9}$/.test(ticketName)) return json({ error: "티켓명은 영문 대문자와 숫자 2~10자로 입력해 주세요. 예: NRN" }, 400);
   if (!dueAt) return json({ error: "프로젝트 마감일을 선택해 주세요." }, 400);
   const id = crypto.randomUUID();
+  const suppliedTicketName = (body.ticket_name || "").trim().toUpperCase();
+  const ticketName = /^[A-Z][A-Z0-9]{1,9}$/.test(suppliedTicketName) ? suppliedTicketName : `P${id.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
   const now = new Date().toISOString();
   try {
     await env.DB.prepare("INSERT INTO projects (id,name,ticket_name,start_date,due_at,owner,status,created_by_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(id, name, ticketName, body.start_date || null, dueAt, (body.owner || "").trim(), body.status || "준비", user.id, now, now).run();

@@ -59,7 +59,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!statuses.includes(nextStatus)) return json({ error: "잘못된 진행상황입니다." }, 400);
   const effectiveAccess = project.id === before.project_id ? access : targetAccess;
   if (!canTransitionStatus(effectiveAccess, before.status, nextStatus, before.assignee_id === user.id)) return json({ error: "이 진행상황으로 변경할 권한이 없습니다." }, 403);
-  const after: TicketSnapshot = { title: (body.title || before.title || "").trim().slice(0, 50), status: nextStatus, severity: body.severity || before.severity, game: project.name, project_id: project.id, assignee_id: assignee?.id || null, assignee: assignee?.name || null, due_at: body.due_at || project.due_at || null, environment: body.environment || "", frequency: body.frequency || "항상", reproduction: body.reproduction || "", content: body.content || "", issue_reason: (body.issue_reason || "").trim().slice(0, 1000) || null };
+  const after: TicketSnapshot = { title: (body.title || before.title || "").trim().slice(0, 100), status: nextStatus, severity: body.severity || before.severity, game: project.name, project_id: project.id, assignee_id: assignee?.id || null, assignee: assignee?.name || null, due_at: body.due_at || project.due_at || null, environment: body.environment || "", frequency: body.frequency || "항상", reproduction: body.reproduction || "", content: body.content || "", issue_reason: (body.issue_reason || "").trim().slice(0, 1000) || null };
   if (!after.title) return json({ error: "제목을 입력해 주세요." }, 400);
   if (after.status === "이슈 아님" && !after.issue_reason) return json({ error: "이슈 아님 처리 사유를 입력해 주세요." }, 400);
   const changedFields = trackedFields.filter(field => (before[field] || "") !== (after[field] || ""));
